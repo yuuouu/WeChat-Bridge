@@ -212,7 +212,6 @@ class WeChatBridge:
                 "/help - 显示帮助",
                 "/status - 查看 Bot 状态",
                 "/uid - 查看自己的用户ID",
-                "/quota - 查看主动配额与用量",
                 "/retry - 重新生成AI回复",
                 "/keepalive [on|off] - 开启或关闭23h断联提醒",
                 "/ai [on|off] - 开启或关闭AI助手",
@@ -252,7 +251,7 @@ class WeChatBridge:
             return (
                 f"🤖 WeChat Bridge\n"
                 f"⏳ 运行: {uptime_str}\n"
-                f"📊 额度: 剩余 {10 - quota_used} 次主动推送\n"
+                f"📊 额度: 已接收1条信息，现已重置，可继续接收 9 次主动推送\n"
                 f"⏰ 保活提醒: {notify_enabled}\n"
                 f"🔗 Webhook: {webhook_enabled}\n"
                 f"---\n"
@@ -279,11 +278,6 @@ class WeChatBridge:
             return "✅ 对话历史已清除"
         elif cmd in ("/uid",):
             return f"🆔 您的用户ID:\n{user_id}"
-        elif cmd in ("/quota", "/配额"):
-            count = 1  # 当前这条回复算 1 条
-            if user_id in self._daily_send_count:
-                self._daily_send_count[user_id]["count"] = 1
-            return f"📊 配额信息\n已接收{count}条信息，现已重置，可继续接收9条信息"
         elif cmd in ("/retry", "/重试"):
             if not self.ai_manager:
                 return "🤖 AI 未启用"
