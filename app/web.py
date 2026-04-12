@@ -1406,7 +1406,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
 
             to = params.get("to", [""])[0]
+            title = params.get("title", [""])[0]
             text = params.get("text", [""])[0] or params.get("content", [""])[0]
+            
+            if title and text:
+                text = f"【{title}】\n{text}"
+            elif title and not text:
+                text = title
 
             # to 不传时自动取第一个联系人
             if not to and bridge.contacts:
