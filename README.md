@@ -175,8 +175,21 @@ curl -X POST http://localhost:5200/api/push \
 - **通知方式**：`自定义通知`
 - **webhookMethod**：`GET`
 - **webhookContentType**：`text/plain`
-- **webhookUrl**：`http://你的IP:5200/api/push?title=$title&content=$content` *(如果设置了密码，末尾加 `&token=凭证`)*
+- **webhookUrl**：`http://你的IP:5200/api/send?text=$content` *(如果设置了密码，末尾加 `&token=凭证`)*
 - 其他选项保持默认留空。保存后点击测试，即可在微信中收到青龙的测试通知！
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><img src="docs/assets/screenshot-qinglong-setting.png" alt="青龙面板通知设置" width="400"></td>
+      <td align="center"><img src="docs/assets/screenshot-wechat-notify.png" alt="微信收到通知效果" width="250"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>青龙面板通知设置</em></td>
+      <td align="center"><em>微信收到通知效果</em></td>
+    </tr>
+  </table>
+</div>
 
 ### 发送图片
 
