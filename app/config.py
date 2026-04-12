@@ -85,17 +85,24 @@ def load_config() -> dict:
     if os.environ.get("AI_ENABLED"):
         config["enabled"] = os.environ["AI_ENABLED"].lower() in ("true", "1", "yes")
         
-    # 向后兼容：将旧的双布尔迁移为新字段
+    # 向后兼容：将旧的双布尔迁移为新字段，如有旧字段则自动升级保存一次
+    needs_save = False
     if "keepalive_23h" in config or "keepalive_23h58m" in config:
-        if "keepalive_remind_minutes" not in config or config.get("keepalive_remind_minutes") == 0:
-            if config.pop("keepalive_23h58m", False):
+        if "keepalive_remind_minutes" not in config:
+            if config.get("keepalive_23h58m", False):
                 config["keepalive_remind_minutes"] = 1438  # 23h58m
-            elif config.pop("keepalive_23h", False):
+            elif config.get("keepalive_23h", False):
                 config["keepalive_remind_minutes"] = 1380  # 23h
         config.pop("keepalive_23h", None)
         config.pop("keepalive_23h58m", None)
+        needs_save = True
+        
     if "keepalive_remind_minutes" not in config:
         config["keepalive_remind_minutes"] = 1380
+        needs_save = True
+        
+    if needs_save:
+        save_config(config)
 
     return config
 

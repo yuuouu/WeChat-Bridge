@@ -1090,7 +1090,8 @@ def _render_logged_in():
             const date = new Date(m.time * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
             
             // 系统级别通知（仅对方发来且网页开启通知且不是首次加载的历史消息时）
-            if (!initialLoad && !isSend && notifyEnabled && Notification.permission === 'granted') {
+            let isNotifyOn = localStorage.getItem('notifyEnabled') === 'true';
+            if (!initialLoad && !isSend && isNotifyOn && Notification.permission === 'granted') {
                 let notifyText = m.text;
                 if (m.media) {
                     if (/\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media)) notifyText = "[视频]";
