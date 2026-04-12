@@ -28,7 +28,7 @@
 ---
 
 <div align="center">
-  <img src="docs/screenshot.png" alt="WeChat Bridge Web UI" width="700">
+  <img src="docs/assets/screenshot.png" alt="WeChat Bridge Web UI" width="700">
   <p><em>Web 管理面板 — 扫码登录、实时消息流、AI 配置一站式管理</em></p>
 </div>
 
