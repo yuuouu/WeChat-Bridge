@@ -35,6 +35,26 @@ bridge: WeChatBridge = None
 # API 鉴权 Token（可选，未设置则接口无鉴权）
 API_TOKEN = os.environ.get("API_TOKEN", "")
 
+# Web UI 会话密钥（每次重启自动更换）
+import hashlib, secrets
+_WEB_SESSION_SECRET = secrets.token_hex(16)
+
+def _make_session_cookie(token: str) -> str:
+    """根据用户输入的 token 生成会话签名"""
+    return hashlib.sha256(f"{token}:{_WEB_SESSION_SECRET}".encode()).hexdigest()[:32]
+
+def _check_web_session(handler) -> bool:
+    """检查浏览器请求是否带有合法的 Web 会话 cookie"""
+    if not API_TOKEN:
+        return True  # 未设置密码则放行
+    cookie_header = handler.headers.get("Cookie", "")
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith("wb_session="):
+            session_val = part[len("wb_session="):]
+            return session_val == _make_session_cookie(API_TOKEN)
+    return False
+
 # 登录状态缓存
 _qr_data: dict | None = None
 _qr_time: float = 0
@@ -1229,6 +1249,104 @@ def _render_logged_in():
       document.getElementById('lightboxImg').src = url;
       document.getElementById('imgLightbox').classList.add('active');
     }
+
+    // Ctrl+V 剪贴板粘贴图片发送
+    async function sendImageFile(file) {
+      const to = contactIpt.value.trim();
+      if (!to) {
+        showToast('请先选择或输入收件人', 'error');
+        return;
+      }
+      const formData = new FormData();
+      formData.append('to', to);
+      formData.append('image', file);
+      showToast('正在发送剪贴板图片...');
+      try {
+        const res = await fetch('/api/send_image', { method: 'POST', body: formData });
+        if (res.ok) {
+          showToast('图片发送成功！');
+          await fetchMsgs();
+          msgsEl.scrollTo({ top: msgsEl.scrollHeight, behavior: 'smooth' });
+        } else {
+          const err = await res.json();
+          showToast('图片发送失败: ' + err.error, 'error');
+        }
+      } catch(e) { showToast('网络错误', 'error'); }
+    }
+
+    document.addEventListener('paste', (e) => {
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file) sendImageFile(file);
+          return;
+        }
+      }
+    });
+"""
+    return HTML_TEMPLATE % (content, js)
+
+
+def _render_auth_page():
+    """Web UI 解锁页面（当 API_TOKEN 已设置但浏览器未认证时）"""
+    content = """
+  <div class="card" style="max-width: 420px; text-align: center;">
+    <div class="logo">🔐</div>
+    <h1 style="margin-bottom: 4px;">WeChat Bridge</h1>
+    <div class="subtitle" style="margin-bottom: 24px;">请输入访问密码以解锁管理面板</div>
+    <div style="margin-bottom: 16px; text-align: left;">
+      <input class="form-input" id="authToken" type="password"
+             placeholder="输入 API Token 密码" autocomplete="current-password"
+             style="width: 100%%; font-size: 15px; padding: 12px 16px;">
+    </div>
+    <div id="authError" style="color: #ef4444; font-size: 13px; margin-bottom: 12px; display: none;"></div>
+    <button class="btn-save" id="authBtn" style="width: 100%%; padding: 12px; font-size: 15px;" onclick="doAuth()">
+      🔓 解锁
+    </button>
+    <div style="color: #666; font-size: 12px; margin-top: 16px;">
+      密码即你设置的 API_TOKEN 环境变量
+    </div>
+  </div>
+"""
+    js = """
+    const tokenIpt = document.getElementById('authToken');
+    const authBtn = document.getElementById('authBtn');
+    const authError = document.getElementById('authError');
+
+    tokenIpt.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') doAuth();
+    });
+    tokenIpt.focus();
+
+    async function doAuth() {
+      const token = tokenIpt.value.trim();
+      if (!token) { authError.textContent = '请输入密码'; authError.style.display = 'block'; return; }
+      authBtn.disabled = true;
+      authBtn.textContent = '验证中...';
+      try {
+        const res = await fetch('/api/web_auth', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({token})
+        });
+        const data = await res.json();
+        if (data.ok) {
+          location.reload();
+        } else {
+          authError.textContent = data.error || '验证失败';
+          authError.style.display = 'block';
+          tokenIpt.select();
+        }
+      } catch(e) {
+        authError.textContent = '网络错误';
+        authError.style.display = 'block';
+      }
+      authBtn.disabled = false;
+      authBtn.textContent = '🔓 解锁';
+    }
 """
     return HTML_TEMPLATE % (content, js)
 
@@ -1392,10 +1510,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if path == "/":
-            if client.logged_in:
+            if not _check_web_session(self):
+                self._html_response(_render_auth_page())
+            elif client.logged_in:
                 self._html_response(_render_logged_in())
             else:
                 self._html_response(_render_qr_page())
+
+        elif path == "/api/web_check":
+            self._json_response({"authed": _check_web_session(self), "need_auth": bool(API_TOKEN)})
 
         elif path == "/api/status":
             self._json_response({
@@ -1549,7 +1672,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b""
 
-        if path == "/api/send":
+        if path == "/api/web_auth":
+            try:
+                data = json.loads(body) if body else {}
+            except json.JSONDecodeError:
+                self._json_response({"ok": False, "error": "无效 JSON"}, 400)
+                return
+            token = data.get("token", "")
+            if token == API_TOKEN:
+                session_val = _make_session_cookie(token)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Set-Cookie", f"wb_session={session_val}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True}).encode("utf-8"))
+            else:
+                self._json_response({"ok": False, "error": "密码错误"}, 403)
+
+        elif path == "/api/send":
             if not self._check_api_token(): return
             if not client.logged_in:
                 self._json_response({"ok": False, "error": "未登录"}, 401)
