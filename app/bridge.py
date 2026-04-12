@@ -210,7 +210,11 @@ class WeChatBridge:
                 "📋 可用指令：",
                 "/help - 显示帮助",
                 "/status - 查看 Bot 状态",
-                "/ai - 查看 AI 状态",
+                "/uid - 查看自己的用户ID",
+                "/quota - 查看主动配额与用量",
+                "/retry - 重新生成AI回复",
+                "/keepalive [on|off] - 开启或关闭23h断联提醒",
+                "/ai [on|off] - 开启或关闭AI助手",
                 "/clear - 清除 AI 对话历史",
             ]
             return "\n".join(lines)
@@ -241,6 +245,69 @@ class WeChatBridge:
             if self.ai_manager:
                 self.ai_manager.clear_history(user_id)
             return "✅ 对话历史已清除"
+        elif cmd in ("/uid",):
+            return f"🆔 您的用户ID:\n{user_id}"
+        elif cmd in ("/quota", "/配额"):
+            count = 0
+            if user_id in self._daily_send_count:
+                count = self._daily_send_count[user_id].get("count", 0)
+            return f"📊 配额信息\n今日已接收 {count} 条主动/过长/AI消息。\n(提示：此数据在您发送本指令时，24小时会话与10条主动限制已被底层同步重置，您现在享有一轮全新的自由交互配额！)"
+        elif cmd in ("/retry", "/重试"):
+            if not self.ai_manager:
+                return "🤖 AI 未启用"
+            last_text = None
+            for m in reversed(self.recent_messages):
+                if m.get("user_id") == user_id and m.get("type") == "recv":
+                    t = m.get("text", "")
+                    if t and not t.startswith("/"):
+                        last_text = t
+                        break
+            if not last_text:
+                return "❌ 未找到您最近的有效对话记录"
+            return f"__MAGIC_RETRY__:{last_text}"
+        elif cmd.startswith("/keepalive ") or cmd.startswith("/保活 "):
+            parts = cmd.split()
+            if len(parts) > 1:
+                action = parts[1].lower()
+                import config as cfg
+                import json
+                c = cfg.load_config()
+                if action in ("on", "1", "true", "开启"):
+                    c["keepalive_remind_minutes"] = 1380
+                    with cfg._config_lock:
+                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    return "✅ 保活提醒已开启 (距最后发言23h时提醒)"
+                elif action in ("off", "0", "false", "关闭"):
+                    c["keepalive_remind_minutes"] = 0
+                    with cfg._config_lock:
+                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    return "❌ 保活提醒已关闭"
+            return "❓ 用法: /keepalive [on|off]"
+        elif cmd.startswith("/ai ") or cmd.startswith("/ai状态 "):
+            parts = cmd.split()
+            if len(parts) > 1:
+                action = parts[1].lower()
+                import config as cfg
+                import json
+                c = cfg.load_config()
+                if action in ("on", "1", "true", "开启"):
+                    c["enabled"] = True
+                    with cfg._config_lock:
+                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    msg = "✅ AI 助手已开启！"
+                    if not c.get("api_key"):
+                        msg += "\n⚠️ 注意：尚未配置 API Key，将无法正常回复，请登录 Web 控制台配置。"
+                    return msg
+                elif action in ("off", "0", "false", "关闭"):
+                    c["enabled"] = False
+                    with cfg._config_lock:
+                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    return "❌ AI 助手已关闭"
+            return "❓ AI状态见/status，开关请基于网页，或者: /ai [on|off]"
         else:
             return f"❓ 未知指令: {text}\n发送 /help 查看可用指令"
 
@@ -330,8 +397,33 @@ class WeChatBridge:
 
         # 指令路由（以 "/" 开头的消息）
         if text.startswith("/"):
+            import uuid
             cmd_reply = self._handle_command(text, from_user)
             if cmd_reply:
+                # 拦截魔法前缀进行 Retry 触发
+                if cmd_reply.startswith("__MAGIC_RETRY__:"):
+                    retry_text = cmd_reply[len("__MAGIC_RETRY__:"):]
+                    if self.ai_manager:
+                        import threading
+                        def _async_retry_worker():
+                            try:
+                                self.client.send_text(from_user, "🔄 正在为您重新生成回答...", context_token)
+                                ai_reply = self.ai_manager.chat(from_user, retry_text)
+                                if ai_reply:
+                                    self.client.send_text(from_user, ai_reply, context_token)
+                                    self._record_message({
+                                        "type": "send",
+                                        "contact": from_name,
+                                        "user_id": from_user,
+                                        "text": ai_reply,
+                                        "time": int(time.time()),
+                                        "msg_id": "ai_" + uuid.uuid4().hex[:8]
+                                    })
+                            except Exception as e:
+                                logger.error("Retry 重试失败: %s", e)
+                        threading.Thread(target=_async_retry_worker, daemon=True).start()
+                    return
+
                 try:
                     self.client.send_text(from_user, cmd_reply, context_token)
                     self._record_message({
@@ -340,7 +432,7 @@ class WeChatBridge:
                         "user_id": from_user,
                         "text": cmd_reply,
                         "time": int(time.time()),
-                        "msg_id": f"cmd_{time.time()}"
+                        "msg_id": "cmd_" + uuid.uuid4().hex[:8]
                     })
                 except Exception as e:
                     logger.error("指令回复失败: %s", e)
