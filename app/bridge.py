@@ -391,31 +391,6 @@ class WeChatBridge:
         self._daily_send_count[user_id] = entry
         return entry["count"]
 
-    def _check_and_warn_quota(self, user_id: str, context_token: str):
-        """检查是否触发 10 条风控阈值，如是则发送提醒"""
-        entry = self._daily_send_count.get(user_id, {})
-        if entry.get("count", 0) >= 10 and not entry.get("warned"):
-            entry["warned"] = True
-            warning_text = (
-                "⚠️【系统提醒】\n"
-                "bot 已连续发送 10 条通知！"
-                "触发了微信风控自动屏蔽，后续消息无法发送。\n"
-                "请回复任意内容解除风控！"
-            )
-            try:
-                self.client.send_text(user_id, warning_text, context_token)
-                contact_name = self.contacts.get(user_id, user_id[:20])
-                self._record_message({
-                    "type": "send",
-                    "contact": contact_name,
-                    "user_id": user_id,
-                    "text": warning_text,
-                    "time": int(time.time()),
-                    "msg_id": f"warn_{time.time()}"
-                })
-                logger.warning("已向 [%s] 发送 10 条风控提醒", contact_name)
-            except Exception as e:
-                logger.error("发送风控提醒失败: %s", e)
 
     def send(self, to: str, text: str) -> dict:
         """
@@ -430,10 +405,20 @@ class WeChatBridge:
 
         context_token = self.get_context_token(user_id)
         
-        # 将计数器放在发送之前，无论成功失败（如超时但实际送达），防封安全起见都计入
+        # 检查当日发送计数，到 10 条时直接附带在第10条消息末尾
         count = self._increment_send_count(user_id)
         contact_name = self.contacts.get(user_id, to)
         logger.info("准备向 [%s] 发送消息 (%d/10 当日)", contact_name, count)
+
+        entry = self._daily_send_count.get(user_id, {})
+        if count >= 10 and not entry.get("warned"):
+            entry["warned"] = True
+            text += (
+                "\n\n━━━━━━━━━━━━━━\n"
+                "⚠️【系统提醒】bot已连续发送 10 条通知，已触发微信接收上限！触发了微信风控自动屏蔽，后续消息无法发送。\n"
+                "👉请回复任意内容解除限制恢复接收！"
+            )
+            logger.warning("将风控提醒附着在第 10 条消息末尾发出")
 
         try:
             result = self.client.send_text(user_id, text, context_token)
@@ -451,11 +436,6 @@ class WeChatBridge:
         except Exception as e:
             logger.error("发送消息失败(但可能已送达): %s", e)
             return {"ok": False, "error": str(e)}
-        finally:
-            # 无论抛没抛出超时异常，计数器在 try 前已经增加，
-            # 判断 10 条风控的逻辑要坚决执行，不能被 Exception 打断
-            self._check_and_warn_quota(user_id, context_token)
-
     def send_typing(self, to: str) -> dict:
         """
         发送"正在输入"状态的高级接口

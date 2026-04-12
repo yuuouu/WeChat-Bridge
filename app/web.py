@@ -743,7 +743,18 @@ def _render_logged_in():
   <div class="modal">
     <h2>⚙️ 系统设置</h2>
     
-    <h3 style="margin-bottom: 15px; margin-top:10px; font-size:15px; color:#ddd;">连接保活提醒 (24h限制)</h3>
+    <h3 style="margin-bottom: 15px; margin-top:10px; font-size:15px; color:#ddd;">🔔 浏览器后台通知</h3>
+    <div class="form-group">
+      <div class="toggle-switch" onclick="toggleNotify()">
+        <div class="toggle-track" id="notifyToggle"><div class="toggle-knob"></div></div>
+        <span id="notifyToggleLabel">后台新消息通知：已关闭</span>
+      </div>
+      <div style="color:#888; font-size:12px; margin-top:6px;">开启后，保持网页打开即可在收到新消息时收到系统屏幕通知</div>
+    </div>
+    
+    <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
+    
+    <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">🔗 连接保活提醒 (24h限制)</h3>
     <div class="form-group">
       <label class="form-label">用户最后一条消息后，超过以下时间发送保活提醒</label>
       <div style="display:flex; align-items:center; gap:10px;">
@@ -891,6 +902,33 @@ def _render_logged_in():
       document.getElementById('aiSettingsGroup').style.display = aiEnabled ? 'block' : 'none';
     }
 
+    let notifyEnabled = localStorage.getItem('notifyEnabled') === 'true';
+
+    async function toggleNotify() {
+      if (!notifyEnabled) {
+        if (!("Notification" in window)) {
+          showToast('您的浏览器不支持系统通知', 'error');
+          return;
+        }
+        if (Notification.permission !== 'granted') {
+          const perm = await Notification.requestPermission();
+          if (perm !== 'granted') {
+            showToast('未获得通知权限', 'error');
+            return;
+          }
+        }
+        notifyEnabled = true;
+      } else {
+        notifyEnabled = false;
+      }
+      localStorage.setItem('notifyEnabled', notifyEnabled);
+      renderNotifyToggle();
+    }
+
+    function renderNotifyToggle() {
+      document.getElementById('notifyToggle').classList.toggle('on', notifyEnabled);
+      document.getElementById('notifyToggleLabel').textContent = notifyEnabled ? '后台新消息通知：已开启' : '后台新消息通知：已关闭';
+    }
 
 
     async function openAISettings() {
@@ -912,6 +950,8 @@ def _render_logged_in():
         document.getElementById('aiBaseUrl').value = cfg.base_url || '';
         document.getElementById('aiPrompt').value = cfg.system_prompt || '';
         document.getElementById('aiHistory').value = cfg.max_history || 10;
+        
+        renderNotifyToggle();
       } catch(e) {}
       document.getElementById('aiModal').classList.add('active');
     }
@@ -1029,6 +1069,16 @@ def _render_logged_in():
             const isSend = m.type === 'send';
             const date = new Date(m.time * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
             
+            // 系统级别通知（仅对方发来且网页开启通知且不是首次加载的历史消息时）
+            if (!initialLoad && !isSend && notifyEnabled && Notification.permission === 'granted') {
+                let notifyText = m.text;
+                if (m.media) {
+                    if (/\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media)) notifyText = "[视频]";
+                    else notifyText = "[图片]";
+                }
+                new Notification('WeChat Bridge - ' + m.contact, { body: notifyText, icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" });
+            }
+
             const div = document.createElement('div');
             div.className = `msg ${m.type}`;
             
