@@ -17,7 +17,7 @@ from Crypto.Cipher import AES
 logger = logging.getLogger(__name__)
 
 # 媒体文件存储根目录（Docker volume 挂载 /data）
-MEDIA_DIR = os.environ.get("MEDIA_DIR", "/data/media")
+MEDIA_DIR = os.environ.get("MEDIA_DIR", "./data/media")
 CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 
 

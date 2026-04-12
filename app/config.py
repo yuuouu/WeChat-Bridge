@@ -5,7 +5,7 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = os.environ.get("AI_CONFIG_FILE", "/data/ai_config.json")
+CONFIG_FILE = os.environ.get("AI_CONFIG_FILE", "./data/ai_config.json")
 _config_lock = threading.Lock()  # 防止多线程并发写 JSON 文件撕裂
 
 # 厂商预设：{provider_id: {name, base_url, models: [{id, name}]}}

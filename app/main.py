@@ -32,7 +32,7 @@ def main():
     logger.info("=" * 50)
     logger.info("WeChat Bridge 启动中...")
     logger.info("端口: %d", port)
-    logger.info("Token 文件: %s", os.environ.get("TOKEN_FILE", "/data/token.json"))
+    logger.info("Token 文件: %s", os.environ.get("TOKEN_FILE", "./data/token.json"))
     webhook = os.environ.get("WEBHOOK_URL", "")
     logger.info("Webhook: %s", webhook if webhook else "(未配置)")
     logger.info("API Token: %s", "已设置" if os.environ.get("API_TOKEN") else "(未设置，接口无鉴权)")

@@ -19,7 +19,7 @@ import media
 
 logger = logging.getLogger(__name__)
 
-CONTACTS_FILE = os.environ.get("CONTACTS_FILE", "/data/contacts.json")
+CONTACTS_FILE = os.environ.get("CONTACTS_FILE", "./data/contacts.json")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # 反向推送的 Webhook 地址
 
 # 消息类型映射

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://ilinkai.weixin.qq.com"
 CHANNEL_VERSION = "1.0.2"
-TOKEN_FILE = os.environ.get("TOKEN_FILE", "/data/token.json")
+TOKEN_FILE = os.environ.get("TOKEN_FILE", "./data/token.json")
 
 
 def _random_uin() -> str:

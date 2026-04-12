@@ -13,7 +13,7 @@ import time
 
 logger = logging.getLogger(__name__)
 
-DB_FILE = os.environ.get("DB_FILE", "/data/messages.db")
+DB_FILE = os.environ.get("DB_FILE", "./data/messages.db")
 
 # 单连接 + 读写锁（SQLite 本身线程安全，但 Python 绑定需要 check_same_thread=False）
 _conn: sqlite3.Connection | None = None

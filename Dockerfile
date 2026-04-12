@@ -13,6 +13,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制应用代码
 COPY app/ .
 
+# Docker 数据路径（覆盖代码中的 ./data 默认值）
+ENV TOKEN_FILE=/data/token.json \
+    CONTACTS_FILE=/data/contacts.json \
+    AI_CONFIG_FILE=/data/ai_config.json \
+    DB_FILE=/data/messages.db \
+    MEDIA_DIR=/data/media
+
 # 数据持久化目录
 VOLUME /data
 
