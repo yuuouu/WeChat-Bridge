@@ -39,6 +39,7 @@ class WeChatBridge:
         self.client = client
         self.contacts: dict[str, str] = {}  # user_id → 显示名
         self.context_tokens: dict[str, str] = {}  # user_id → 最新 context_token
+        self._start_time = time.time()
         self.activity_tracker: dict[str, dict] = {} # user_id → 活跃状态
         from collections import deque
         self.recent_messages = deque(maxlen=50)  # 内存缓存（兼容 ag_inbox 等）
@@ -221,12 +222,27 @@ class WeChatBridge:
         elif cmd in ("/status", "/状态"):
             import config as cfg
             ai_config = cfg.load_config()
+            
+            # 计算运行时间
+            uptime_seconds = int(time.time() - getattr(self, '_start_time', time.time()))
+            m, s = divmod(uptime_seconds, 60)
+            h, m = divmod(m, 60)
+            uptime_str = f"{h}小时 {m}分钟" if h > 0 else f"{m}分钟"
+            if uptime_seconds < 60: uptime_str = f"{uptime_seconds}秒"
+            
+            notify_enabled = "✅" if ai_config.get("notify", {}).get("enabled", True) else "❌"
+            webhook_enabled = "✅" if ai_config.get("webhook_url") else "❌"
+            api_key_status = "✅" if ai_config.get("api_key") else "❌"
+            
             return (
                 f"🤖 WeChat Bridge\n"
-                f"AI: {'✅ 已启用' if ai_config.get('enabled') else '❌ 未启用'}\n"
-                f"厂商: {ai_config.get('provider', 'N/A')}\n"
-                f"模型: {ai_config.get('model', 'N/A')}\n"
-                f"联系人: {len(self.contacts)} 个"
+                f"运行时间: {uptime_str}\n"
+                f"在线设备: 1 台\n"
+                f"配置: 保活{notify_enabled} Webhook{webhook_enabled}\n"
+                f"---\n"
+                f"AI状态: {'✅ 已启用' if ai_config.get('enabled') else '❌ 未启用'}\n"
+                f"渠道模型: {ai_config.get('provider', 'N/A')}·{ai_config.get('model', 'N/A')}\n"
+                f"APIKey: {api_key_status}"
             )
         elif cmd in ("/ai",):
             import config as cfg
@@ -425,7 +441,6 @@ class WeChatBridge:
                     return
 
                 try:
-                    self.client.send_text(from_user, cmd_reply, context_token)
                     self._record_message({
                         "type": "send",
                         "contact": from_name,
@@ -434,6 +449,7 @@ class WeChatBridge:
                         "time": int(time.time()),
                         "msg_id": "cmd_" + uuid.uuid4().hex[:8]
                     })
+                    self.client.send_text(from_user, cmd_reply, context_token)
                 except Exception as e:
                     logger.error("指令回复失败: %s", e)
             return  # 指令消息不触发 Webhook 和 AI 处理
