@@ -640,6 +640,35 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   @keyframes slideDown { from{transform:translateY(-20px);opacity:0} to{transform:translateY(0);opacity:1} }
   @keyframes fadeOut { from{opacity:1} to{opacity:0; visibility:hidden} }
   
+  .dialog-overlay {
+    position: fixed; top: 0; left: 0; width: 100%%; height: 100%%; z-index: 10000;
+    background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+    display: flex; align-items: center; justify-content: center;
+    animation: fadeIn 0.2s ease-out;
+  }
+  @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+  .dialog-box {
+    background: #1e1e2d; border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 16px; padding: 28px 32px; max-width: 420px; width: 90%%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6); color: #e0e0e0;
+    animation: scaleIn 0.2s ease-out;
+  }
+  @keyframes scaleIn { from{transform:scale(0.9);opacity:0} to{transform:scale(1);opacity:1} }
+  .dialog-title {
+    font-size: 16px; font-weight: 600; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .dialog-title.error { color: #ef4444; }
+  .dialog-title.warning { color: #f59e0b; }
+  .dialog-title.info { color: #6366f1; }
+  .dialog-body { font-size: 14px; line-height: 1.6; color: #aaa; margin-bottom: 24px; white-space: pre-line; }
+  .dialog-btn {
+    background: linear-gradient(135deg, #6366f1, #4f46e5); color: white;
+    border: none; padding: 10px 28px; border-radius: 8px; cursor: pointer;
+    font-size: 14px; font-weight: 500; float: right;
+  }
+  .dialog-btn:hover { opacity: 0.9; }
+  
   .img-upload-btn {
     background: #1e1e2d;
     border: 1px solid rgba(255,255,255,0.1);
@@ -906,6 +935,23 @@ def _render_logged_in():
       setTimeout(() => toast.remove(), 3000);
     }
 
+    function showDialog(msg, type='error') {
+      const overlay = document.createElement('div');
+      overlay.className = 'dialog-overlay';
+      const icons = { error: '❌', warning: '⚠️', info: 'ℹ️' };
+      const titles = { error: '发送失败', warning: '提示', info: '提示' };
+      overlay.innerHTML = `
+        <div class="dialog-box">
+          <div class="dialog-title ${type}">${icons[type] || '⚠️'} ${titles[type] || '提示'}</div>
+          <div class="dialog-body">${msg}</div>
+          <button class="dialog-btn" onclick="this.closest('.dialog-overlay').remove()">确定</button>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      overlay.querySelector('.dialog-btn').focus();
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    }
+
     async function saveAISettings() {
       const cfg = {
         enabled: aiEnabled,
@@ -1031,7 +1077,7 @@ def _render_logged_in():
       const text = textIpt.value.trim();
       if (!text) return;
       if (!to) {
-        alert(`\u26a0\ufe0f \u8bf7\u5148\u8f93\u5165\u6536\u4ef6\u4eba\u540d\u79f0\n\niLink API \u9650\u5236\uff1a\u7528\u6237\u9700\u8981\u5148\u7ed9\u4f60\u53d1\u4e00\u6761\u6d88\u606f\uff0c\u7cfb\u7edf\u624d\u80fd\u83b7\u53d6\u5176 user_id\u3002\n\u8bf7\u5728\u5de6\u4fa7\u8054\u7cfb\u4eba\u5217\u8868\u9009\u62e9\uff0c\u6216\u8f93\u5165\u5df2\u7ecf\u7ed9\u4f60\u53d1\u8fc7\u6d88\u606f\u7684\u8054\u7cfb\u4eba\u540d\u79f0`);
+        showDialog('请先输入收件人名称\n\niLink API 限制：用户需要先给你发一条消息，系统才能获取其 user_id。\n请在左侧联系人列表选择，或输入已经给你发过消息的联系人名称', 'warning');
         return;
       }
       
@@ -1048,10 +1094,10 @@ def _render_logged_in():
           msgsEl.scrollTo({ top: msgsEl.scrollHeight, behavior: 'smooth' });
         } else {
           const err = await res.json();
-          alert('发送失败: ' + err.error);
+          showDialog(err.error, 'error');
         }
       } catch(e) {
-        alert('网络错误');
+        showDialog('无法连接到服务器，请检查网络', 'error');
       }
       sendBtn.disabled = false;
       textIpt.focus();

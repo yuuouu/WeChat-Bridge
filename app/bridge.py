@@ -46,6 +46,9 @@ class WeChatBridge:
         self._running = False
         self._poll_thread: threading.Thread | None = None
         self.ai_manager = None  # 由 main.py 注入 AIChatManager 实例
+        # 每日发送计数器（微信风控 10 条/天）
+        # 结构: { user_id: { "date": "2026-04-12", "count": 5, "warned": False } }
+        self._daily_send_count: dict[str, dict] = {}
         db.init_db()  # 初始化 SQLite 消息库
         self._load_contacts()
 
@@ -292,6 +295,14 @@ class WeChatBridge:
                     "last_receive_time": now,
                     "reminded": False
                 }
+                # 用户发消息了，重置当日发送计数器
+                today = datetime.now().strftime("%Y-%m-%d")
+                if from_user in self._daily_send_count:
+                    entry = self._daily_send_count[from_user]
+                    if entry.get("date") == today:
+                        entry["count"] = 0
+                        entry["warned"] = False
+                        logger.info("用户 [%s] 回复了消息，重置当日发送计数器", from_user[:20])
                 should_save = True
                 
             if should_save:
@@ -370,6 +381,42 @@ class WeChatBridge:
 
     # ── 发送消息 ──
 
+    def _increment_send_count(self, user_id: str) -> int:
+        """增加当日发送计数，返回新的计数值"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        entry = self._daily_send_count.get(user_id, {})
+        if entry.get("date") != today:
+            entry = {"date": today, "count": 0, "warned": False}
+        entry["count"] += 1
+        self._daily_send_count[user_id] = entry
+        return entry["count"]
+
+    def _check_and_warn_quota(self, user_id: str, context_token: str):
+        """检查是否触发 10 条风控阈值，如是则发送提醒"""
+        entry = self._daily_send_count.get(user_id, {})
+        if entry.get("count", 0) >= 10 and not entry.get("warned"):
+            entry["warned"] = True
+            warning_text = (
+                "⚠️【系统提醒】\n"
+                "bot 已连续发送 10 条通知！"
+                "触发了微信风控自动屏蔽，后续消息无法发送。\n"
+                "请回复任意内容解除风控！"
+            )
+            try:
+                self.client.send_text(user_id, warning_text, context_token)
+                contact_name = self.contacts.get(user_id, user_id[:20])
+                self._record_message({
+                    "type": "send",
+                    "contact": contact_name,
+                    "user_id": user_id,
+                    "text": warning_text,
+                    "time": int(time.time()),
+                    "msg_id": f"warn_{time.time()}"
+                })
+                logger.warning("已向 [%s] 发送 10 条风控提醒", contact_name)
+            except Exception as e:
+                logger.error("发送风控提醒失败: %s", e)
+
     def send(self, to: str, text: str) -> dict:
         """
         发送消息的高级接口
@@ -394,6 +441,11 @@ class WeChatBridge:
                 "time": int(time.time()),
                 "msg_id": f"s_{time.time()}"
             })
+
+            # 检查当日发送计数，到 10 条时自动发送风控警告
+            count = self._increment_send_count(user_id)
+            logger.info("向 [%s] 发送消息 (%d/10 当日)", contact_name, count)
+            self._check_and_warn_quota(user_id, context_token)
             
             return {"ok": True, "result": result}
         except Exception as e:
