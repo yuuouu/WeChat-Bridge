@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
 echo ""
 echo " 💬 WeChat Bridge"
 echo " ══════════════════════════════════"
@@ -8,27 +11,27 @@ echo ""
 
 # 检查 Python
 if ! command -v python3 &>/dev/null; then
-    echo " [✗] 未检测到 Python 3，请先安装:"
+    echo " [X] Python 3 not found"
     echo "     macOS: brew install python3"
     echo "     Ubuntu/Debian: sudo apt install python3 python3-pip"
     exit 1
 fi
 
 # 安装依赖
-echo " [1/3] 安装依赖..."
-pip3 install -q -r app/requirements.txt
+pip3 install -q -r app/requirements.txt 2>/dev/null
 
 # 创建数据目录
 mkdir -p data
-echo " [2/3] 数据目录已就绪"
 
-# 启动服务
-echo " [3/3] 启动服务..."
+# 后台启动服务
+echo " [OK] Starting service in background..."
+nohup python3 app/main.py >> data/run.log 2>&1 &
+PID=$!
+echo $PID > data/wechat-bridge.pid
+
+echo " [OK] Service started (PID: $PID)"
 echo ""
-echo " ┌─────────────────────────────────────────┐"
-echo " │  打开浏览器访问: http://localhost:5200   │"
-echo " │  按 Ctrl+C 停止服务                      │"
-echo " └─────────────────────────────────────────┘"
+echo "  Web UI:   http://localhost:5200"
+echo "  Logs:     tail -f data/run.log"
+echo "  Stop:     kill $PID"
 echo ""
-cd app
-python3 main.py

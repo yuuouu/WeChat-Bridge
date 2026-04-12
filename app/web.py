@@ -1720,7 +1720,8 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 def run_server(host: str = "0.0.0.0", port: int = 5200):
     """启动 HTTP 服务器"""
     server = ThreadingHTTPServer((host, port), BridgeHandler)
-    logger.info("HTTP API 服务已启动: http://%s:%d", host, port)
+    display_host = "localhost" if host == "0.0.0.0" else host
+    logger.info("HTTP 服务监听: %s:%d (绑定: %s)", display_host, port, host)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

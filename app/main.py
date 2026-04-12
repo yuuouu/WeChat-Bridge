@@ -40,6 +40,8 @@ import web
 
 def main():
     port = int(os.environ.get("PORT", "5200"))
+    # Docker 容器内不应打开浏览器
+    auto_open = os.environ.get("NO_BROWSER", "").lower() not in ("1", "true", "yes")
 
     logger.info("=" * 50)
     logger.info("WeChat Bridge 启动中...")
@@ -48,6 +50,7 @@ def main():
     webhook = os.environ.get("WEBHOOK_URL", "")
     logger.info("Webhook: %s", webhook if webhook else "(未配置)")
     logger.info("API Token: %s", "已设置" if os.environ.get("API_TOKEN") else "(未设置，接口无鉴权)")
+    logger.info("日志文件: %s", _log_file)
     logger.info("=" * 50)
 
     # 初始化客户端
@@ -80,6 +83,18 @@ def main():
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+
+    # 延迟自动打开浏览器（等待服务器就绪）
+    url = f"http://localhost:{port}"
+    if auto_open:
+        import threading
+        import webbrowser
+        def _open_browser():
+            logger.info("🌐 正在打开浏览器: %s", url)
+            webbrowser.open(url)
+        threading.Timer(1.5, _open_browser).start()
+
+    logger.info("✅ 服务已就绪: %s", url)
 
     # 启动 HTTP 服务（阻塞主线程）
     web.run_server(host="0.0.0.0", port=port)

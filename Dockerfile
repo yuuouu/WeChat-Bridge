@@ -18,7 +18,8 @@ ENV TOKEN_FILE=/data/token.json \
     CONTACTS_FILE=/data/contacts.json \
     AI_CONFIG_FILE=/data/ai_config.json \
     DB_FILE=/data/messages.db \
-    MEDIA_DIR=/data/media
+    MEDIA_DIR=/data/media \
+    NO_BROWSER=1
 
 # 数据持久化目录
 VOLUME /data
