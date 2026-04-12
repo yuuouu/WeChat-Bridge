@@ -58,7 +58,7 @@ DEFAULT_CONFIG = {
     "max_history": 10,
     "max_tokens_per_day": 100000,
     "usage": {},
-    "keepalive_remind_minutes": 0,  # 0=关闭, 60~1430=用户最后消息后N分钟发送提醒
+    "keepalive_remind_minutes": 1380,  # 0=关闭, 60~1430=用户最后消息后N分钟发送提醒
 }
 
 
@@ -95,7 +95,7 @@ def load_config() -> dict:
         config.pop("keepalive_23h", None)
         config.pop("keepalive_23h58m", None)
     if "keepalive_remind_minutes" not in config:
-        config["keepalive_remind_minutes"] = 0
+        config["keepalive_remind_minutes"] = 1380
 
     return config
 
