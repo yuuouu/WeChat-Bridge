@@ -61,6 +61,42 @@ def main():
     ilink_client = ILinkClient()
     wechat_bridge = WeChatBridge(ilink_client)
 
+    # ==== 检测更新 ====
+    def check_for_updates():
+        try:
+            import urllib.request
+            import json
+            import subprocess
+            
+            # 尝试获取本地 Git Commit
+            try:
+                local_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], stderr=subprocess.STDOUT, cwd=_project_root).decode('utf-8').strip()
+            except Exception:
+                local_commit = None
+
+            req = urllib.request.Request("https://api.github.com/repos/yuuouu/WeChat-Bridge/commits/main", headers={'User-Agent': 'WeChat-Bridge-Updater'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                remote_commit = data.get("sha")
+                
+                if local_commit and remote_commit:
+                    if local_commit != remote_commit:
+                        logger.warning("🎉 【发现新版本】当前运行的版本较旧！")
+                        logger.warning("👉 更新方式 1 (推荐): 在项目目录下运行 'git pull' 后重启服务")
+                        logger.warning("👉 更新方式 2 (一键): 重新运行 Windows PowerShell 一键安装命令")
+                        logger.warning("👉 更新方式 3 (Docker): 运行 'docker compose pull && docker compose up -d'")
+                        logger.warning("查看更新日志: https://github.com/yuuouu/WeChat-Bridge/commits/main")
+                    else:
+                        logger.info("✅ 更新检查: 当前已是最新版本")
+                else:
+                    logger.info("✅ 更新检查: 最新远程版本为 %s", remote_commit[:7] if remote_commit else "未知")
+        except Exception as e:
+            logger.debug("检测更新失败: %s", e)
+
+    import threading
+    threading.Thread(target=check_for_updates, daemon=True).start()
+
+
     # ==== 新增：注入 AI 模块 ====
     try:
         import config as cfg

@@ -90,6 +90,32 @@ pip install -r app/requirements.txt
 cd app && python main.py
 ```
 
+### 版本更新与升级
+
+程序每次启动时会自动检测 GitHub 是否有新版本，并在运行日志 (`data/run.log`) 中输出提醒。
+
+你也可以随时手动更新至最新版本：
+
+**原生安装 (Git) 更新：**
+```bash
+cd WeChat-Bridge
+git pull
+# 停止旧服务后再次运行
+./start.sh  # (Windows 为 start.bat)
+```
+
+**Docker 容器更新：**
+```bash
+cd wechat-bridge
+docker compose pull
+docker compose up -d
+```
+
+**Windows 一键脚本更新：**
+如果安装时使用了 PowerShell 一键脚本，可直接在此机器上重新运行该安装命令。脚本会自动进行文件拉取与覆盖、更新依赖并重启服务，你的配置和 `data/` 目录将安全保留。
+
+---
+
 ### Docker Compose
 
 ```bash
