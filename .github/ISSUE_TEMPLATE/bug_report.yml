@@ -1,0 +1,61 @@
+name: Bug Report / Bug 报告
+description: 报告一个 Bug
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提交 Bug 报告！请尽量完整填写以下信息。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清晰地描述遇到的问题
+      placeholder: 发送消息时返回错误...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 如何复现这个问题？
+      placeholder: |
+        1. 打开 Web UI
+        2. 发送消息给 '...'
+        3. 看到错误 '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 你期望发生什么？
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志输出
+      description: 相关的 `docker logs wechat-bridge` 输出
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Docker 镜像版本或 commit hash
+      placeholder: v1.0.0
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: 系统架构
+      options:
+        - x86_64 (amd64)
+        - aarch64 (arm64)
+        - armv7
+        - 其他
+    validations:
+      required: true

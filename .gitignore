@@ -1,0 +1,50 @@
+# === 敏感凭证 ===
+data-token.json
+*.token
+.env
+
+# === 运行时数据（容器内生成）===
+data/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# === 日志 & 临时文件 ===
+*.log
+*.txt
+!requirements.txt
+
+# === 构建产物 ===
+*.tar
+*.tar.gz
+*.zip
+
+# === ag_monitor 运行垃圾 ===
+ag_monitor/*.log
+ag_monitor/*.txt
+ag_monitor/test.js
+
+# === 开发调试产物 ===
+window_dump*.xml
+u2_demo.py
+_overview.md
+wechat_beautiful_push.json
+test_gh.py
+
+# === OS ===
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
