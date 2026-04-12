@@ -36,9 +36,25 @@
 
 ## 🚀 快速开始
 
-### 方式一：原生 Python（Windows / macOS / Linux）
+### 一键安装（推荐）
 
-无需 Docker，只需 Python 3.11+：
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/install.ps1 | iex"
+```
+
+脚本会自动检测环境、安装依赖、下载代码并启动服务。
+
+### 手动安装
+
+如果你更喜欢手动操作，只需 Python 3.11+：
 
 ```bash
 git clone https://github.com/yuuouu/WeChat-Bridge.git
@@ -47,15 +63,7 @@ pip install -r app/requirements.txt
 cd app && python main.py
 ```
 
-或者直接双击 `start.bat`（Windows）/ `bash start.sh`（macOS/Linux）。
-
-### 方式二：Docker 一键安装
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yuuouu/wechat-bridge/main/install.sh | bash
-```
-
-### 方式三：Docker Compose
+### Docker Compose
 
 ```bash
 mkdir -p wechat-bridge && cd wechat-bridge
