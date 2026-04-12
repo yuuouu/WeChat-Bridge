@@ -19,3 +19,7 @@
 - 🖼️ Web UI 图片/视频内联展示与 Lightbox 预览
 - ⌨️ 微信指令系统：`/help`、`/status`、`/ai`、`/clear`
 - 📊 AI Token 用量日统计与每日限额
+- 📡 Webhook 适配器：自动解析 Grafana / GitHub / Uptime Kuma / Bark 告警负载
+- 📢 多播发送：`to` 参数支持逗号分隔多目标
+- 📝 Markdown 降级：自动将 Markdown 转为微信友好纯文本（`?markdown=1`）
+- 🚀 GET `/api/send`：浏览器地址栏一行即可发送消息

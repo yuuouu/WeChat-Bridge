@@ -85,10 +85,23 @@ docker compose up -d --build
 ### 发送消息
 
 ```bash
+# 最简单：GET 请求，to 省略时自动发给第一个联系人
+curl "http://localhost:5200/api/send?text=Hello!"
+
+# POST JSON（指定联系人）
 curl -X POST http://localhost:5200/api/send \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{"to": "好友名称", "text": "Hello!"}'
+```
+
+#### 进阶功能
+
+```bash
+# 多播发送：逗号分隔多个联系人（每人间隔 0.5s 防风控）
+curl "http://localhost:5200/api/send?to=老婆,家庭群&text=晚饭做好了"
+
+# Markdown 降级：自动将 Markdown 转为微信友好的纯文本
+curl "http://localhost:5200/api/send?text=**重要通知**&markdown=1"
 ```
 
 ### 快捷推送（兼容青龙面板 / ntfy / Bark）
@@ -118,6 +131,24 @@ curl -X POST http://localhost:5200/api/push \
 - **webhookUrl**：`http://你的IP:5200/api/push?title=$title&content=$content` *(如果设置了密码，末尾加 `&token=凭证`)*
 - 其他选项保持默认留空。保存后点击测试，即可在微信中收到青龙的测试通知！
 
+### Webhook 适配器
+
+自动识别并格式化第三方服务的告警负载为微信友好文本：
+
+```bash
+# 指定类型：Grafana / GitHub / Uptime Kuma / Bark
+curl -X POST http://localhost:5200/api/webhook/grafana \
+  -H "Content-Type: application/json" \
+  -d '{"status": "firing", "alerts": [{"labels": {"alertname": "HighCPU"}}]}'
+
+# 自动检测：系统会根据字段特征自动识别来源
+curl -X POST http://localhost:5200/api/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"title": "下载完成", "message": "文件已就绪"}'
+```
+
+支持的 Webhook 格式：`grafana` · `github` · `uptimekuma` · `bark` · 通用自动检测
+
 ### 获取联系人列表
 
 ```bash
@@ -130,7 +161,10 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:5200/api/contacts
 curl http://localhost:5200/api/status
 ```
 
-### 发送图片
+### 发送图片（实验性）
+
+> ⚠️ **已知限制**：由于微信客户端对非官方协议的图片消息实施了严格的 Protobuf 缩略图校验，
+> 移动端可能无法接收图片。Web UI 可正常显示。此功能正在持续改进中。
 
 支持三种方式上传图片：
 
