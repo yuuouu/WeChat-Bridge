@@ -1077,7 +1077,7 @@ def _render_logged_in():
       const text = textIpt.value.trim();
       if (!text) return;
       if (!to) {
-        showDialog('请先输入收件人名称\n\niLink API 限制：用户需要先给你发一条消息，系统才能获取其 user_id。\n请在左侧联系人列表选择，或输入已经给你发过消息的联系人名称', 'warning');
+        showDialog('请先输入收件人名称\\n\\niLink API 限制：用户需要先给你发一条消息，系统才能获取其 user_id。\\n请在左侧联系人列表选择，或输入已经给你发过消息的联系人名称', 'warning');
         return;
       }
       
