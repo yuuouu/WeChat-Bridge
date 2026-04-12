@@ -2,9 +2,9 @@
 
 # 💬 WeChat Bridge
 
-**基于腾讯 iLink Bot API 的微信消息桥接服务**
+> **"告别笨重且必须常开电脑的 OpenClaw 客户端挂机。专为只需要纯粹微信对话能力、追求极简轻量的你而打造。"**
 
-轻量 · 开箱即用 · 跨平台原生运行
+**基于腾讯 iLink Bot API 的超轻量微信消息桥接服务**
 
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://ghcr.io)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
