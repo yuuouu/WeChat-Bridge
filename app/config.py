@@ -54,7 +54,7 @@ DEFAULT_CONFIG = {
     "model": "gpt-4o-mini",
     "api_key": "",
     "base_url": "",
-    "system_prompt": "你是一个有帮助的 AI 助手。回复尽量简洁。",
+    "system_prompt": "你是一个全能的微信 AI 助手。你的目标是提供准确、高效、友好的解答。\n\n【核心原则】\n1. 言简意赅：微信聊天场景下屏幕有限，回复务必精炼直接，突出重点，避免冗长段落。\n2. 排版清晰：适当使用换行、分点列表和 Emoji 等元素，确保手机端阅读体验感良好。\n3. 真诚客观：遇到不知道的问题请直接坦诚说明，绝不胡编乱造。",
     "max_history": 10,
     "max_tokens_per_day": 100000,
     "usage": {},
