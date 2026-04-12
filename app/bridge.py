@@ -230,19 +230,35 @@ class WeChatBridge:
             uptime_str = f"{h}小时 {m}分钟" if h > 0 else f"{m}分钟"
             if uptime_seconds < 60: uptime_str = f"{uptime_seconds}秒"
             
-            notify_enabled = "✅" if ai_config.get("notify", {}).get("enabled", True) else "❌"
-            webhook_enabled = "✅" if ai_config.get("webhook_url") else "❌"
-            api_key_status = "✅" if ai_config.get("api_key") else "❌"
+            # 保活配置详情
+            keepalive = ai_config.get("keepalive_remind_minutes", 1380)
+            if keepalive > 0:
+                k_hours = keepalive // 60
+                k_mins = keepalive % 60
+                time_fmt = f"{k_hours}时" if k_mins == 0 else f"{k_hours}时{k_mins}分"
+                notify_enabled = f"✅开启 ({time_fmt})"
+            else:
+                notify_enabled = "❌关闭"
+                
+            webhook_enabled = "✅启用" if ai_config.get("webhook_url") else "❌未配置"
+            api_key_status = "✅已填" if ai_config.get("api_key") else "❌空缺"
+            
+            # 配额情况（当天）
+            quota_used = 0
+            if user_id in self._daily_send_count:
+                if self._daily_send_count[user_id].get("date") == datetime.now().strftime("%Y-%m-%d"):
+                    quota_used = self._daily_send_count[user_id].get("count", 0)
             
             return (
                 f"🤖 WeChat Bridge\n"
-                f"运行时间: {uptime_str}\n"
-                f"在线设备: 1 台\n"
-                f"配置: 保活{notify_enabled} Webhook{webhook_enabled}\n"
+                f"⏳ 运行: {uptime_str}\n"
+                f"📊 额度: 剩余 {10 - quota_used} 次主动推送\n"
+                f"⏰ 保活提醒: {notify_enabled}\n"
+                f"🔗 Webhook: {webhook_enabled}\n"
                 f"---\n"
-                f"AI状态: {'✅ 已启用' if ai_config.get('enabled') else '❌ 未启用'}\n"
-                f"渠道模型: {ai_config.get('provider', 'N/A')}·{ai_config.get('model', 'N/A')}\n"
-                f"APIKey: {api_key_status}"
+                f"🤖 AI: {'✅已启用' if ai_config.get('enabled') else '❌未启用'}\n"
+                f"🧠 模型: {ai_config.get('provider', 'N/A')} · {ai_config.get('model', 'N/A')}\n"
+                f"🔑 API Key: {api_key_status}"
             )
         elif cmd in ("/ai",):
             import config as cfg
