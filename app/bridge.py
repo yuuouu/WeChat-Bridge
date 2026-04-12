@@ -248,10 +248,10 @@ class WeChatBridge:
         elif cmd in ("/uid",):
             return f"🆔 您的用户ID:\n{user_id}"
         elif cmd in ("/quota", "/配额"):
-            count = 0
+            count = 1  # 当前这条回复算 1 条
             if user_id in self._daily_send_count:
-                count = self._daily_send_count[user_id].get("count", 0)
-            return f"📊 配额信息\n今日已接收 {count} 条主动/过长/AI消息。\n(提示：此数据在您发送本指令时，24小时会话与10条主动限制已被底层同步重置，您现在享有一轮全新的自由交互配额！)"
+                self._daily_send_count[user_id]["count"] = 1
+            return f"📊 配额信息\n已接收{count}条信息，现已重置，可继续接收9条信息"
         elif cmd in ("/retry", "/重试"):
             if not self.ai_manager:
                 return "🤖 AI 未启用"
