@@ -10,12 +10,24 @@ import signal
 import logging
 
 # 配置日志
+log_format = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+log_datefmt = "%Y-%m-%d %H:%M:%S"
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format=log_format,
+    datefmt=log_datefmt,
     stream=sys.stdout,
 )
+
+# 同时输出到文件 data/run.log
+_log_dir = os.environ.get("LOG_DIR", "./data")
+os.makedirs(_log_dir, exist_ok=True)
+_log_file = os.path.join(_log_dir, "run.log")
+from logging.handlers import RotatingFileHandler
+_file_handler = RotatingFileHandler(_log_file, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter(log_format, datefmt=log_datefmt))
+logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger("wechat-bridge")
 
 # 确保能 import 同目录模块

@@ -174,10 +174,9 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:5200/api/contacts
 curl http://localhost:5200/api/status
 ```
 
-### 发送图片（实验性）
+### 发送图片
 
-> ⚠️ **已知限制**：由于微信客户端对非官方协议的图片消息实施了严格的 Protobuf 缩略图校验，
-> 移动端可能无法接收图片。Web UI 可正常显示。此功能正在持续改进中。
+> 💡 图片通过 CDN 加密上传，手机端可正常查看。Web 管理面板的图片预览可能不显示，属正常现象。
 
 支持三种方式上传图片：
 

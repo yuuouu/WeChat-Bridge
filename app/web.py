@@ -1029,7 +1029,11 @@ def _render_logged_in():
     async function sendMsg() {
       const to = contactIpt.value.trim();
       const text = textIpt.value.trim();
-      if (!to || !text) return;
+      if (!text) return;
+      if (!to) {
+        alert('\u26a0\ufe0f \u8bf7\u5148\u8f93\u5165\u6536\u4ef6\u4eba\u540d\u79f0\n\niLink API \u9650\u5236\uff1a\u7528\u6237\u9700\u8981\u5148\u7ed9\u4f60\u53d1\u4e00\u6761\u6d88\u606f\uff0c\u7cfb\u7edf\u624d\u80fd\u83b7\u53d6\u5176 user_id\u3002\n\u8bf7\u5728\u5de6\u4fa7\u8054\u7cfb\u4eba\u5217\u8868\u9009\u62e9\uff0c\u6216\u8f93\u5165\u5df2\u7ecf\u7ed9\u4f60\u53d1\u8fc7\u6d88\u606f\u7684\u8054\u7cfb\u4eba\u540d\u79f0');
+        return;
+      }
       
       sendBtn.disabled = true;
       try {
@@ -1097,7 +1101,7 @@ def _render_logged_in():
         });
         
         if (res.ok) {
-          showToast('图片发送成功!');
+          showToast('\u56fe\u7247\u53d1\u9001\u6210\u529f\uff01\u624b\u673a\u7aef\u53ef\u67e5\u770b');
           await fetchMsgs(); // 立即刷新查看消息
           msgsEl.scrollTo({ top: msgsEl.scrollHeight, behavior: 'smooth' });
         } else {

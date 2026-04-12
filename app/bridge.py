@@ -103,6 +103,9 @@ class WeChatBridge:
 
     def find_user_id(self, name_or_id: str) -> str | None:
         """通过名称或 ID 查找 user_id"""
+        if not name_or_id:
+            return None
+
         # 直接是 ID
         if "@im.wechat" in name_or_id:
             return name_or_id
@@ -260,7 +263,7 @@ class WeChatBridge:
 
     def process_message(self, msg: dict):
         """处理单条收到的消息"""
-        logger.info("【RAW INBOUND】: %s", json.dumps(msg, ensure_ascii=False))
+        logger.debug("RAW INBOUND: %s", json.dumps(msg, ensure_ascii=False))
         msg_type = msg.get("message_type", 0)
 
         # message_type=1 表示用户发来的消息，2 表示 bot 自己发的
@@ -374,7 +377,9 @@ class WeChatBridge:
         """
         user_id = self.find_user_id(to)
         if not user_id:
-            return {"ok": False, "error": f"找不到联系人: {to}"}
+            if not to:
+                return {"ok": False, "error": "缺少收件人。iLink 限制：对方需先给你发一条消息，系统才能获取其 user_id"}
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
 
         context_token = self.get_context_token(user_id)
         try:
@@ -420,7 +425,7 @@ class WeChatBridge:
         """
         user_id = self.find_user_id(to)
         if not user_id:
-            return {"ok": False, "error": f"找不到联系人: {to}"}
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
 
         context_token = self.get_context_token(user_id)
         try:
