@@ -4,7 +4,7 @@
 
 **基于腾讯 iLink Bot API 的微信消息桥接服务**
 
-轻量 · 开箱即用 · Docker 一键部署
+轻量 · 开箱即用 · 跨平台原生运行
 
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://ghcr.io)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
@@ -20,16 +20,16 @@
 - 🌐 **标准 HTTP API** — RESTful 接口，curl 一行即可发微信消息
 - 🔔 **反向 Webhook 推送** — 收到微信消息时主动 POST 到你的服务（Dify / FastGPT / Node-RED）
 - 🤖 **内置 AI 助手** — 原生集成 OpenAI / Gemini / Claude / DeepSeek，开箱即用
-- 📱 **Web 管理面板** — 扫码登录、实时消息流、AI 配置、保活设置，一站式管理
+- 📱 **Web 管理面板** — 扫码登录、实时消息流、图片收发、AI 配置、保活设置，一站式管理
 - ⏰ **24h 保活守护** — 智能检测微信通道 23h/23h58m 超时，主动提醒防断联
 - 🔒 **API Token 鉴权** — 可选的 Bearer Token 认证，保护你的接口安全
-- 🐳 **Docker 一键部署** — 一行命令拉起服务，支持 x86/ARM
+- 🐳 **多种部署方式** — 支持 Docker / Windows / macOS / Linux 原生运行
 
 ---
 
 <div align="center">
-  <img src="docs/assets/screenshot.png" alt="WeChat Bridge Web UI" width="700">
-  <p><em>Web 管理面板 — 扫码登录、实时消息流、AI 配置一站式管理</em></p>
+  <img src="docs/assets/screenshot-chat.png" alt="WeChat Bridge 聊天界面" width="700">
+  <p><em>Web 管理面板 — 实时消息收发、图片支持、联系人管理</em></p>
 </div>
 
 ---
@@ -50,11 +50,11 @@ curl -fsSL https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/install.s
 powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/install.ps1 | iex"
 ```
 
-脚本会自动检测环境、安装依赖、下载代码并启动服务。
+脚本会自动检测环境、安装依赖、下载代码、启动后台服务并打开浏览器。
 
 ### 手动安装
 
-如果你更喜欢手动操作，只需 Python 3.11+：
+只需 Python 3.10+：
 
 ```bash
 git clone https://github.com/yuuouu/WeChat-Bridge.git
@@ -88,6 +88,20 @@ docker compose up -d
 ```
 
 安装完成后，浏览器打开 `http://localhost:5200`，扫码登录即可。
+
+### 服务管理
+
+```bash
+# Windows
+start.bat          # 后台启动服务并打开浏览器
+stop.bat           # 停止后台服务
+
+# macOS / Linux
+./start.sh         # 后台启动服务
+./stop.sh          # 停止后台服务
+```
+
+运行日志保存在 `data/run.log`，可随时查看。
 
 ---
 
@@ -144,6 +158,29 @@ curl -X POST http://localhost:5200/api/push \
 - **webhookUrl**：`http://你的IP:5200/api/push?title=$title&content=$content` *(如果设置了密码，末尾加 `&token=凭证`)*
 - 其他选项保持默认留空。保存后点击测试，即可在微信中收到青龙的测试通知！
 
+### 发送图片
+
+支持三种方式上传图片，Web 面板也可直接点击 🖼️ 按钮发送：
+
+```bash
+# 方式一：multipart/form-data（最通用，适合脚本和前端）
+curl -X POST http://localhost:5200/api/send_image \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "to=好友名称" \
+  -F "image=@/path/to/photo.jpg"
+
+# 方式二：JSON + Base64（适合程序化调用）
+curl -X POST http://localhost:5200/api/send_image \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{"to": "好友名称", "image": "<base64编码的图片数据>"}'
+
+# 方式三：裸二进制流（适合管道和流式处理）
+curl -X POST "http://localhost:5200/api/send_image?to=好友名称&token=YOUR_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @/path/to/photo.jpg
+```
+
 ### Webhook 适配器
 
 自动识别并格式化第三方服务的告警负载为微信友好文本：
@@ -172,31 +209,6 @@ curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:5200/api/contacts
 
 ```bash
 curl http://localhost:5200/api/status
-```
-
-### 发送图片
-
-> 💡 图片通过 CDN 加密上传，手机端可正常查看。Web 管理面板的图片预览可能不显示，属正常现象。
-
-支持三种方式上传图片：
-
-```bash
-# 方式一：multipart/form-data（最通用，适合脚本和前端）
-curl -X POST http://localhost:5200/api/send_image \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "to=好友名称" \
-  -F "image=@/path/to/photo.jpg"
-
-# 方式二：JSON + Base64（适合程序化调用）
-curl -X POST http://localhost:5200/api/send_image \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{"to": "好友名称", "image": "<base64编码的图片数据>"}'
-
-# 方式三：裸二进制流（适合管道和流式处理）
-curl -X POST "http://localhost:5200/api/send_image?to=好友名称&token=YOUR_TOKEN" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary @/path/to/photo.jpg
 ```
 
 ---
@@ -270,6 +282,7 @@ curl -X POST "http://localhost:5200/api/send_image?to=好友名称&token=YOUR_TO
 - 当前已支持**文本、图片、视频**消息解析及保存，语音/文件等类型解析待后续扩展
 - 建议在内网环境使用；若暴露到公网，**务必设置 `API_TOKEN`**
 - 微信通道存在 24 小时超时限制，建议开启保活提醒功能
+- iLink 协议限制：对方需先给你发一条消息，系统才能获取其 `user_id` 用于主动发送
 
 ---
 

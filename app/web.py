@@ -954,7 +954,7 @@ def _render_logged_in():
 
     async function fetchContacts() {
       try {
-        const res = await fetch('/api/contacts');
+        const res = await fetch('/api/contacts?_t=' + Date.now());
         const data = await res.json();
         contactList.innerHTML = '';
         const entries = Object.entries(data.contacts);
@@ -972,7 +972,7 @@ def _render_logged_in():
 
     async function fetchMsgs() {
       try {
-        const res = await fetch('/api/messages');
+        const res = await fetch('/api/messages?_t=' + Date.now());
         const data = await res.json();
         let appended = false;
         
@@ -1031,7 +1031,7 @@ def _render_logged_in():
       const text = textIpt.value.trim();
       if (!text) return;
       if (!to) {
-        alert('\u26a0\ufe0f \u8bf7\u5148\u8f93\u5165\u6536\u4ef6\u4eba\u540d\u79f0\n\niLink API \u9650\u5236\uff1a\u7528\u6237\u9700\u8981\u5148\u7ed9\u4f60\u53d1\u4e00\u6761\u6d88\u606f\uff0c\u7cfb\u7edf\u624d\u80fd\u83b7\u53d6\u5176 user_id\u3002\n\u8bf7\u5728\u5de6\u4fa7\u8054\u7cfb\u4eba\u5217\u8868\u9009\u62e9\uff0c\u6216\u8f93\u5165\u5df2\u7ecf\u7ed9\u4f60\u53d1\u8fc7\u6d88\u606f\u7684\u8054\u7cfb\u4eba\u540d\u79f0');
+        alert(`\u26a0\ufe0f \u8bf7\u5148\u8f93\u5165\u6536\u4ef6\u4eba\u540d\u79f0\n\niLink API \u9650\u5236\uff1a\u7528\u6237\u9700\u8981\u5148\u7ed9\u4f60\u53d1\u4e00\u6761\u6d88\u606f\uff0c\u7cfb\u7edf\u624d\u80fd\u83b7\u53d6\u5176 user_id\u3002\n\u8bf7\u5728\u5de6\u4fa7\u8054\u7cfb\u4eba\u5217\u8868\u9009\u62e9\uff0c\u6216\u8f93\u5165\u5df2\u7ecf\u7ed9\u4f60\u53d1\u8fc7\u6d88\u606f\u7684\u8054\u7cfb\u4eba\u540d\u79f0`);
         return;
       }
       
@@ -1229,12 +1229,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
     def _html_response(self, html: str, status: int = 200):
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 

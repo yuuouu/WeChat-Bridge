@@ -20,8 +20,12 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
+# 确保 CWD 为项目根目录（app/ 的上级），使所有 ./data/ 路径正确
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(_project_root)
+
 # 同时输出到文件 data/run.log
-_log_dir = os.environ.get("LOG_DIR", "./data")
+_log_dir = os.environ.get("LOG_DIR", os.path.join(_project_root, "data"))
 os.makedirs(_log_dir, exist_ok=True)
 _log_file = os.path.join(_log_dir, "run.log")
 from logging.handlers import RotatingFileHandler
@@ -31,7 +35,7 @@ logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger("wechat-bridge")
 
 # 确保能 import 同目录模块
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_project_root, "app"))
 
 from ilink import ILinkClient
 from bridge import WeChatBridge

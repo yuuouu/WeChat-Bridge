@@ -437,6 +437,7 @@ class WeChatBridge:
             import hashlib
             import media
             import os
+            media._ensure_media_dir()
             filename = f"out_img_{int(time.time())}_{hashlib.md5(file_data).hexdigest()[:8]}.jpg"
             save_path = os.path.join(media.MEDIA_DIR, filename)
             with open(save_path, "wb") as f:

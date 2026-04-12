@@ -58,11 +58,26 @@ Write-Info ("Python: " + $pyVer.Trim())
 $hasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 
 if ($hasGit) {
-    if (Test-Path $INSTALL_DIR) {
+    $isGitRepo = (Test-Path $INSTALL_DIR) -and (Test-Path (Join-Path $INSTALL_DIR ".git"))
+    if ($isGitRepo) {
         Write-Warn "Directory exists, updating..."
         Push-Location $INSTALL_DIR
-        & git pull --ff-only 2>&1 | Out-Null
+        $pullResult = & git pull --ff-only 2>&1 | Out-String
+        if ($pullResult -match "Already up to date") {
+            Write-Info "Code is up to date"
+        }
+        elseif ($pullResult -match "Updating") {
+            Write-Info "Code updated"
+        }
+        else {
+            Write-Warn ("git pull: " + $pullResult.Trim())
+        }
         Pop-Location
+    }
+    elseif (Test-Path $INSTALL_DIR) {
+        Write-Warn "Directory exists but not a git repo, re-cloning..."
+        Remove-Item $INSTALL_DIR -Recurse -Force
+        & git clone --depth 1 ("https://github.com/" + $REPO + ".git") $INSTALL_DIR 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     }
     else {
         Write-Info "Cloning repository..."
@@ -119,5 +134,29 @@ Write-Host ""
 $start = Read-Host "  Start now? [Y/n]"
 if (($start -ne "n") -and ($start -ne "N")) {
     Set-Location $INSTALL_DIR
-    & $pythonCmd app/main.py
+
+    # 查找 pythonw（无窗口版本）用于后台运行
+    $pythonwCmd = Get-Command pythonw -ErrorAction SilentlyContinue
+    $mainScript = Join-Path $INSTALL_DIR "app\main.py"
+
+    if ($pythonwCmd) {
+        Start-Process -FilePath $pythonwCmd.Source -ArgumentList $mainScript -WorkingDirectory $INSTALL_DIR
+    }
+    else {
+        Start-Process -FilePath $pythonCmd -ArgumentList $mainScript -WorkingDirectory $INSTALL_DIR -WindowStyle Hidden
+    }
+
+    Write-Info "Service started in background"
+    Write-Host "  Logs:     " -NoNewline
+    Write-Host (Join-Path $INSTALL_DIR "data\run.log") -ForegroundColor Cyan
+    Write-Host "  Stop:     " -NoNewline
+    Write-Host (Join-Path $INSTALL_DIR "stop.bat") -ForegroundColor Cyan
+    Write-Host ""
+
+    # 等服务启动后打开浏览器
+    Start-Sleep -Seconds 2
+    Start-Process ("http://localhost:" + $PORT)
+    Write-Host "  Browser opened. Enjoy!" -ForegroundColor Green
+    Write-Host ""
 }
+
