@@ -39,6 +39,7 @@ powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/i
 - 🔗 **双向消息桥接** — 微信收发消息全打通，支持文本、图片、视频解析及指令路由
 - 🌐 **标准 HTTP API** — RESTful 接口，curl 一行即可发微信消息
 - 🔔 **反向 Webhook 推送** — 收到微信消息时主动 POST 到你的服务（Dify / FastGPT / Node-RED）
+- 💬 **桌面级消息弹窗** — 网页驻留后台时，支持调用主流操作系统的原生系统通知
 - 🤖 **内置 AI 助手** — 原生集成 OpenAI / Gemini / Claude / DeepSeek，开箱即用
 - 📱 **Web 管理面板** — 扫码登录、实时消息流、图片收发、AI 配置、保活设置，一站式管理
 - ⏰ **24h 保活守护** — 智能检测微信通道 24 小时超时，主动提醒防断联
@@ -48,8 +49,16 @@ powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/i
 ---
 
 <div align="center">
-  <img src="docs/assets/screenshot-chat.png" alt="WeChat Bridge 聊天界面" width="700">
-  <p><em>Web 管理面板 — 实时消息收发、图片支持、联系人管理</em></p>
+  <table>
+    <tr>
+      <td align="center"><img src="docs/assets/screenshot-chat.png" alt="WeChat Bridge 聊天界面" width="500"></td>
+      <td align="center"><img src="docs/assets/screenshot-desktop-notify.png" alt="桌面端新消息推送通知" width="300"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Web 管理面板 一站式管理</em></td>
+      <td align="center"><em>操作系统原生级新消息桌面弹窗</em></td>
+    </tr>
+  </table>
 </div>
 
 ---
