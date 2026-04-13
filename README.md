@@ -65,6 +65,25 @@ powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/i
 
 ---
 
+## 📸 实际使用效果
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><img src="docs/assets/screenshot-quota-limit.png" alt="10条配额风控机制" width="250"></td>
+      <td align="center"><img src="docs/assets/screenshot-daily-push.jpg" alt="日常签到与金价推送" width="250"></td>
+      <td align="center"><img src="docs/assets/screenshot-system-push.jpg" alt="系统报告与路由器状态推送" width="250"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>10 条配额防风控机制</em></td>
+      <td align="center"><em>签到日常 / 金价速报</em></td>
+      <td align="center"><em>系统报告 / 服务监控 / 路由器状态</em></td>
+    </tr>
+  </table>
+</div>
+
+---
+
 ## ⚠️ iLink API 使用限制
 
 WeChat Bridge 基于腾讯官方 iLink Bot API，该接口存在以下硬性限制：
@@ -236,6 +255,45 @@ curl -X POST http://localhost:5200/api/push \
   </table>
 </div>
 
+#### 3. 在 OpenWrt / iStoreOS 中使用（luci-app-wechatpush）
+
+如果你使用 OpenWrt 或 iStoreOS 路由器，可以安装 [luci-app-wechatpush](https://github.com/tty228/luci-app-wechatpush)（微信推送），将路由器的**设备上下线、CPU 温度报警、登录提醒、定时状态报告**等事件自动推送到微信。
+
+**配置步骤：**
+
+1. 在 iStore 应用商店搜索安装 `微信推送`，或手动安装 `luci-app-wechatpush`
+2. 前往 `服务` → `微信推送` → `配置` 页面
+3. 推送模式选择 **「自定义推送」**
+4. 在自定义推送文本框中粘贴以下 JSON：
+
+```json
+{
+    "url": "http://你的路由器IP:5200/api/send",
+    "data": "@${tempjsonpath}",
+    "content_type": "Content-Type: application/json",
+    "str_title_start": "",
+    "str_title_end": "",
+    "str_linefeed": "\\n",
+    "str_splitline": "\\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\\n",
+    "str_space": "  ➜  ",
+    "str_tab": " 🔹 ",
+    "type":
+      {
+        "to": "\"你的微信user_id\"",
+        "text": "\"📌 ${1}\\n━━━━━━━━━━━━━━━━━\\n${2}\""
+      }
+}
+```
+
+5. 保存并应用，点击「发送测试」即可在微信中收到路由器推送
+
+> 💡 **提示**：`to` 字段中的 `user_id` 可在微信中发送 `/uid` 指令获取。`url` 中的 IP 通常为路由器网关地址（如 `192.168.100.1`）。如设置了 `API_TOKEN`，在 URL 末尾追加 `?token=你的密钥`。
+
+<div align="center">
+  <img src="docs/assets/screenshot-luci-wechatpush.png" alt="luci-app-wechatpush 自定义推送配置" width="600">
+  <br><em>luci-app-wechatpush 自定义推送配置页面</em>
+</div>
+
 ### 发送图片
 
 支持三种方式上传图片，Web 面板也可直接点击 🖼️ 按钮发送：
@@ -378,8 +436,8 @@ sequenceDiagram
 ## 🙏 鸣谢
 
 本项目在协议研究与底层实现上参考了以下优秀的开源项目，在此表示诚挚的感谢：
-- [wechat-ilink-client](https://github.com/photon-hq/wechat-ilink-client) - iLink Bot API 底层协议客户端实现
-https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin
+- [wechat-ilink-client](https://github.com/photon-hq/wechat-ilink-client) 
+- [iLink Bot API 底层协议客户端实现](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin)
 
 ---
 
