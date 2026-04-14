@@ -26,10 +26,11 @@ venv/
 *.tar.gz
 *.zip
 
-# === ag_monitor 运行垃圾 ===
-ag_monitor/*.log
-ag_monitor/*.txt
-ag_monitor/test.js
+# === ag_monitor（本地开发中，暂不发布）===
+ag_monitor/
+
+# === 本地草稿（不提交）===
+docs/未来计划.md
 
 # === 开发调试产物 ===
 window_dump*.xml
