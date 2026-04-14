@@ -14,8 +14,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 确保在项目根目录
-cd /d "%~dp0"
+:: 确保在项目根目录（脚本在 scripts/ 下，需回到上一级）
+cd /d "%~dp0.."
 
 :: 安装依赖（静默）
 pip install -q -r app\requirements.txt >nul 2>&1

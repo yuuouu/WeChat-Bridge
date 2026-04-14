@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  WeChat Bridge — 一键安装脚本 (macOS / Linux)
-#  用法: curl -fsSL https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/install.sh | bash
+#  用法: curl -fsSL https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/scripts/install.sh | bash
 # ============================================================
 set -e
 
@@ -83,7 +83,7 @@ else
   echo -e "${GREEN}  ✅ WeChat Bridge 安装成功!${NC}"
   echo -e "${GREEN}══════════════════════════════════${NC}"
   echo ""
-  echo -e "  🚀 启动服务:  ${CYAN}cd ${INSTALL_DIR} && bash start.sh${NC}"
+  echo -e "  🚀 启动服务:  ${CYAN}cd ${INSTALL_DIR} && bash scripts/start.sh${NC}"
   echo -e "  📱 Web 面板:  ${CYAN}http://localhost:${PORT}${NC}"
 fi
 

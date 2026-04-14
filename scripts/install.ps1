@@ -1,6 +1,6 @@
 # ============================================================
 #  WeChat Bridge - Windows Installer
-#  Usage: powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/install.ps1 | iex"
+#  Usage: powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/scripts/install.ps1 | iex"
 # ============================================================
 
 $ErrorActionPreference = "Continue"
@@ -121,7 +121,7 @@ Write-Host "  WeChat Bridge installed!" -ForegroundColor Green
 Write-Host "  ================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Start:    " -NoNewline
-Write-Host ("cd " + $INSTALL_DIR + " ; .\start.bat") -ForegroundColor Cyan
+Write-Host ("cd " + $INSTALL_DIR + " ; .\scripts\start.bat") -ForegroundColor Cyan
 Write-Host "  Web UI:   " -NoNewline
 Write-Host ("http://localhost:" + $PORT) -ForegroundColor Cyan
 Write-Host ""
@@ -150,7 +150,7 @@ if (($start -ne "n") -and ($start -ne "N")) {
     Write-Host "  Logs:     " -NoNewline
     Write-Host (Join-Path $INSTALL_DIR "data\run.log") -ForegroundColor Cyan
     Write-Host "  Stop:     " -NoNewline
-    Write-Host (Join-Path $INSTALL_DIR "stop.bat") -ForegroundColor Cyan
+    Write-Host (Join-Path $INSTALL_DIR "scripts\stop.bat") -ForegroundColor Cyan
     Write-Host ""
 
     # 等服务启动后打开浏览器
