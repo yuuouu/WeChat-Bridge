@@ -763,18 +763,7 @@ def _render_logged_in():
   <div class="modal">
     <h2>⚙️ 系统设置</h2>
     
-    <h3 style="margin-bottom: 15px; margin-top:10px; font-size:15px; color:#ddd;">🔔 浏览器后台通知</h3>
-    <div class="form-group">
-      <div class="toggle-switch" onclick="toggleNotify()">
-        <div class="toggle-track" id="notifyToggle"><div class="toggle-knob"></div></div>
-        <span id="notifyToggleLabel">后台新消息通知：已关闭</span>
-      </div>
-      <div style="color:#888; font-size:12px; margin-top:6px;">开启后，保持网页打开即可在收到新消息时收到系统屏幕通知</div>
-    </div>
-    
-    <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
-    
-    <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">🔗 连接保活提醒 (24h限制)</h3>
+    <h3 style="margin-bottom: 15px; margin-top:10px; font-size:15px; color:#ddd;">🔗 连接保活提醒 (24h限制)</h3>
     <div class="form-group">
       <label class="form-label">用户最后一条消息后，超过以下时间发送保活提醒</label>
       <div style="display:flex; align-items:center; gap:10px;">
@@ -789,6 +778,17 @@ def _render_logged_in():
       <div id="kaHint" style="color:#888; font-size:12px; margin-top:6px;"></div>
     </div>
 
+    <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
+
+    <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">🔔 浏览器后台通知</h3>
+    <div class="form-group">
+      <div class="toggle-switch" onclick="toggleNotify()">
+        <div class="toggle-track" id="notifyToggle"><div class="toggle-knob"></div></div>
+        <span id="notifyToggleLabel">后台新消息通知：已关闭</span>
+      </div>
+      <div style="color:#888; font-size:12px; margin-top:6px;">开启后，保持网页打开即可在收到新消息时收到系统屏幕通知</div>
+    </div>
+    
     <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
     
     <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">🤖 智能回复助手</h3>
@@ -829,6 +829,17 @@ def _render_logged_in():
         <label class="form-label">历史轮数</label>
         <input class="form-input" id="aiHistory" type="number" min="1" max="50" value="10">
       </div>
+    </div>
+
+    <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
+
+    <div style="text-align:center; color:#666; font-size:12px; line-height:1.8;">
+      <a href="https://github.com/yuuouu/WeChat-Bridge" target="_blank" rel="noopener"
+         style="color:#818cf8; text-decoration:none; transition:color 0.2s;"
+         onmouseover="this.style.color='#a5b4fc'" onmouseout="this.style.color='#818cf8'">
+        github.com/yuuouu/WeChat-Bridge
+      </a><br>
+      <span style="color:#555; font-size:11px;">基于 iLink Bot API · MIT License</span>
     </div>
 
     <div class="modal-actions">
@@ -1566,6 +1577,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             try:
                 status_data = client.poll_qrcode_status(qrcode)
+                # 登录成功后，按 bot_id 切换数据目录
+                if client.logged_in and status_data.get("status") == "confirmed":
+                    bridge._setup_data_dir()
+                    bridge._load_contacts()
+                    bridge.recent_messages.clear()
+                    bridge._consecutive_send_count.clear()
+                    logger.info("登录成功，数据目录已切换到 bot: %s", client.get_bot_id())
                 self._json_response({
                     "status": status_data.get("status"),
                     "logged_in": client.logged_in,
