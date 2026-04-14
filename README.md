@@ -427,9 +427,21 @@ sequenceDiagram
 | **Anthropic** | Claude Sonnet 4, Claude 3.5 Haiku |
 | **DeepSeek** | DeepSeek Chat (V3), Reasoner (R1) |
 
-微信中发送 `/help` 查看可用指令，`/clear` 清除对话历史。
-
 > ⚠️ AI 自动回复也会消耗每日 10 条配额。如果用户频繁与 AI 对话，可能较快耗尽当天的主动下发次数。
+
+---
+
+## 📋 微信可用交互指令
+
+直接在微信对方框向您的 Bot 发送以下指令进行交互：
+
+- `/help` - 显示帮助菜单
+- `/status` - 查看当前服务状态、发信额度及各项配置
+- `/uid` - 获取自己的用户 ID（用于青龙/路由器配置 Webhook 触达）
+- `/retry` - 重新请求 AI 生成最后一次对话
+- `/keepalive [on|off]` - 开启或关闭 23h 通道阻断提醒
+- `/ai [on|off]` - 快捷开启或关闭 AI 自动回复
+- `/clear` - 清除当前的 AI 对话记忆池
 
 ---
 
