@@ -55,12 +55,12 @@ docker compose up -d
 
 ```bash
 # Windows
-start.bat          # 后台启动服务并打开浏览器
-stop.bat           # 停止后台服务
+scripts\start.bat          # 后台启动服务并打开浏览器
+scripts\stop.bat           # 停止后台服务
 
 # macOS / Linux
-./start.sh         # 后台启动服务
-./stop.sh          # 停止后台服务
+./scripts/start.sh         # 后台启动服务
+./scripts/stop.sh          # 停止后台服务
 ```
 
 运行日志保存在 `data/run.log`，可随时查看。
@@ -78,7 +78,7 @@ stop.bat           # 停止后台服务
 cd WeChat-Bridge
 git pull
 # 停止旧服务后再次运行
-./start.sh  # (Windows 为 start.bat)
+./scripts/start.sh  # (Windows 为 scripts\start.bat)
 ```
 
 **Docker 容器更新：**
