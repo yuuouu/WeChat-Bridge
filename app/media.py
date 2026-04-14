@@ -21,6 +21,13 @@ MEDIA_DIR = os.environ.get("MEDIA_DIR", "./data/media")
 CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 
 
+def set_media_dir(new_dir: str):
+    """切换媒体存储目录（用于多账号隔离）"""
+    global MEDIA_DIR
+    MEDIA_DIR = new_dir
+    logger.info("媒体目录切换为: %s", MEDIA_DIR)
+
+
 def _ensure_media_dir():
     """确保媒体存储目录存在"""
     os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -121,66 +128,14 @@ def download_and_decrypt_image(
     msg_id: str = "",
     timeout: int = 30,
 ) -> str | None:
-    """
-    从微信 CDN 下载加密图片并解密保存到本地
-    
-    参数:
-        encrypted_query_param: CDN 加密查询参数（从 pic_item 中获取）
-        aes_key_b64: base64 编码的 AES 密钥
-        msg_id: 消息 ID，用于生成文件名
-        timeout: HTTP 请求超时秒数
-        
-    返回:
-        解密后图片的本地文件路径（成功），或 None（失败）
-    """
-    _ensure_media_dir()
-
-    # 构造 CDN 下载 URL
-    cdn_url = f"{CDN_BASE_URL}/download?encrypted_query_param={encrypted_query_param}"
-    logger.info("开始下载 CDN 图片: msg_id=%s, url=%s", msg_id, cdn_url[:120])
-
-    try:
-        # 1. 下载加密数据
-        resp = requests.get(cdn_url, timeout=timeout)
-        resp.raise_for_status()
-        encrypted_data = resp.content
-        logger.info("CDN 图片下载完成: %d bytes", len(encrypted_data))
-
-        if len(encrypted_data) < 16:
-            logger.error("CDN 返回数据过短: %d bytes，可能是错误响应", len(encrypted_data))
-            return None
-
-        # 2. 解码 AES 密钥
-        aes_key = _decode_aes_key(aes_key_b64, media_type="image")
-
-        # 3. AES-128-ECB 解密
-        decrypted = decrypt_aes_ecb(encrypted_data, aes_key)
-        logger.info("图片解密成功: %d bytes", len(decrypted))
-
-        # 4. 检测图片格式
-        ext = _detect_image_format(decrypted)
-
-        # 5. 生成文件名并保存
-        ts = int(time.time())
-        safe_id = hashlib.md5(msg_id.encode()).hexdigest()[:12] if msg_id else f"{ts}"
-        filename = f"{ts}_{safe_id}.{ext}"
-        filepath = os.path.join(MEDIA_DIR, filename)
-
-        with open(filepath, "wb") as f:
-            f.write(decrypted)
-
-        logger.info("图片已保存: %s (%d bytes)", filepath, len(decrypted))
-        return filepath
-
-    except requests.exceptions.RequestException as e:
-        logger.error("CDN 图片下载失败: %s", e)
-        return None
-    except ValueError as e:
-        logger.error("图片解密失败: %s", e)
-        return None
-    except Exception as e:
-        logger.error("图片处理异常: %s", e, exc_info=True)
-        return None
+    """从微信 CDN 下载加密图片并解密保存到本地（download_and_decrypt_media 的便捷别名）"""
+    return download_and_decrypt_media(
+        encrypted_query_param=encrypted_query_param,
+        aes_key_b64=aes_key_b64,
+        msg_id=msg_id,
+        media_type="image",
+        timeout=timeout,
+    )
 
 
 def download_and_decrypt_media(
@@ -191,9 +146,9 @@ def download_and_decrypt_media(
     timeout: int = 60,
 ) -> str | None:
     """
-    通用媒体文件下载解密（视频/文件/语音等）
-    
-    与图片流程相同：CDN 下载 → AES-128-ECB 解密 → 本地保存
+    通用媒体文件下载解密（图片/视频/文件/语音等）
+
+    流程：CDN 下载 → AES-128-ECB 解密 → 本地保存
     """
     _ensure_media_dir()
 
@@ -208,10 +163,10 @@ def download_and_decrypt_media(
                      media_type, len(encrypted_data), len(encrypted_data) / 1048576)
 
         if len(encrypted_data) < 16:
-            logger.error("CDN 返回数据过短: %d bytes", len(encrypted_data))
+            logger.error("CDN 返回数据过短: %d bytes，可能是错误响应", len(encrypted_data))
             return None
 
-        # 解码密钥（视频等非图片媒体使用相同编码格式）
+        # 解码密钥
         aes_key = _decode_aes_key(aes_key_b64, media_type=media_type)
 
         # AES-128-ECB 解密
@@ -264,15 +219,20 @@ def _detect_image_format(data: bytes) -> str:
 
 
 def _detect_media_format(data: bytes, media_type: str = "video") -> str:
-    """通过文件头魔数检测媒体格式"""
-    # 先尝试图片格式（通用）
-    if data[:8] == b'\x89PNG\r\n\x1a\n':
+    """通过文件头魔数检测媒体格式（优先尝试图片格式）"""
+    # 先尝试图片格式检测
+    if media_type == "image":
+        return _detect_image_format(data)
+
+    # 非图片类型也先检测是否为图片（兜底）
+    img_check = data[:8]
+    if img_check[:8] == b'\x89PNG\r\n\x1a\n':
         return "png"
-    if data[:3] == b'\xff\xd8\xff':
+    if img_check[:3] == b'\xff\xd8\xff':
         return "jpg"
-    if data[:4] == b'GIF8':
+    if img_check[:4] == b'GIF8':
         return "gif"
-    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+    if img_check[:4] == b'RIFF' and data[8:12] == b'WEBP':
         return "webp"
 
     # 视频格式

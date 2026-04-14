@@ -15,10 +15,8 @@ COPY app/ .
 
 # Docker 数据路径（覆盖代码中的 ./data 默认值）
 ENV TOKEN_FILE=/data/token.json \
-    CONTACTS_FILE=/data/contacts.json \
+    DATA_DIR=/data \
     AI_CONFIG_FILE=/data/ai_config.json \
-    DB_FILE=/data/messages.db \
-    MEDIA_DIR=/data/media \
     NO_BROWSER=1
 
 # 数据持久化目录

@@ -48,6 +48,24 @@ class ILinkClient:
         self._session = requests.Session()
         self._load_token()
 
+    @staticmethod
+    def _extract_bot_id(bot_token: str) -> str | None:
+        """从 bot_token 中提取稳定唯一标识
+        bot_token 格式: 'xxxx@im.bot:060000ab3d3d...' → 取 '@' 前的 'xxxx' 作为 bot_id
+        """
+        if not bot_token:
+            return None
+        if "@" in bot_token:
+            return bot_token.split("@")[0]
+        # 兜底：取 token 前 12 位
+        return bot_token[:12] if len(bot_token) >= 12 else bot_token
+
+    def get_bot_id(self) -> str | None:
+        """获取当前登录的 bot 唯一标识（用于数据目录隔离）"""
+        if self.bot_id:
+            return self.bot_id
+        return self._extract_bot_id(self.bot_token)
+
     @property
     def logged_in(self) -> bool:
         return self.bot_token is not None
@@ -62,7 +80,7 @@ class ILinkClient:
                     data = json.load(f)
                 self.bot_token = data.get("bot_token")
                 self.base_url = data.get("base_url", BASE_URL)
-                self.bot_id = data.get("bot_id")
+                self.bot_id = data.get("bot_id") or self._extract_bot_id(self.bot_token)
                 self.get_updates_buf = data.get("get_updates_buf", "")
                 if self.bot_token:
                     logger.info("已从文件恢复登录态: bot_id=%s", self.bot_id)
@@ -124,7 +142,7 @@ class ILinkClient:
         if data.get("status") == "confirmed":
             self.bot_token = data["bot_token"]
             self.base_url = data.get("baseurl", BASE_URL)
-            self.bot_id = data.get("bot_id")
+            self.bot_id = data.get("bot_id") or self._extract_bot_id(self.bot_token)
             self._save_token()
             logger.info("扫码登录成功! bot_id=%s", self.bot_id)
 
@@ -298,7 +316,6 @@ class ILinkClient:
         filekey = hashlib.md5(file_data[:1024] + str(time.time()).encode()).hexdigest()
 
         # 4. 获取上传 URL
-        import hashlib
         rawfilemd5 = hashlib.md5(file_data).hexdigest()
 
         upload_req = {

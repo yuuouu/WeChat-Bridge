@@ -14,6 +14,7 @@ import time
 logger = logging.getLogger(__name__)
 
 DB_FILE = os.environ.get("DB_FILE", "./data/messages.db")
+_active_db_file = DB_FILE  # 实际使用的路径（可被 init_db 覆盖）
 
 # 单连接 + 读写锁（SQLite 本身线程安全，但 Python 绑定需要 check_same_thread=False）
 _conn: sqlite3.Connection | None = None
@@ -24,8 +25,8 @@ def _get_conn() -> sqlite3.Connection:
     """获取全局共享的 SQLite 连接"""
     global _conn
     if _conn is None:
-        os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-        _conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        os.makedirs(os.path.dirname(_active_db_file) or ".", exist_ok=True)
+        _conn = sqlite3.connect(_active_db_file, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")       # 写前日志，提高并发读
         _conn.execute("PRAGMA synchronous=NORMAL")      # 平衡可靠性与性能
@@ -34,8 +35,17 @@ def _get_conn() -> sqlite3.Connection:
     return _conn
 
 
-def init_db():
-    """初始化数据库表结构"""
+def init_db(db_file: str = None):
+    """初始化数据库表结构。可传入 db_file 切换到新路径（用于多账号隔离）"""
+    global _active_db_file, _conn
+    if db_file and db_file != _active_db_file:
+        # 切换数据库路径：先关闭旧连接
+        with _lock:
+            if _conn is not None:
+                _conn.close()
+                _conn = None
+        _active_db_file = db_file
+        logger.info("数据库路径切换为: %s", _active_db_file)
     with _lock:
         conn = _get_conn()
         conn.execute("""
@@ -74,7 +84,7 @@ def init_db():
                 logger.info("已清理 %d 条超过 %d 天的旧消息", cursor.rowcount, retention_days)
 
         count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        logger.info("消息数据库已初始化: %s (现有 %d 条记录)", DB_FILE, count)
+        logger.info("消息数据库已初始化: %s (现有 %d 条记录)", _active_db_file, count)
 
 
 def save_message(msg: dict):

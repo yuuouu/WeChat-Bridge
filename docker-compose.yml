@@ -10,7 +10,7 @@ services:
     environment:
       - PORT=5200
       - TOKEN_FILE=/data/token.json
-      - CONTACTS_FILE=/data/contacts.json
+      - DATA_DIR=/data
       - WEBHOOK_URL=  # 可选：收到消息时主动 POST 推送的目标地址（例如 Dify/FastGPT Webhook）
       - API_TOKEN=    # 可选：API 接口鉴权 Token，设置后需要 Bearer Token 才能调用 /api/send 等接口
       - TZ=Asia/Shanghai
