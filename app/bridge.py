@@ -19,7 +19,7 @@ import media
 
 logger = logging.getLogger(__name__)
 
-CONTACTS_FILE = os.environ.get("CONTACTS_FILE", "./data/contacts.json")
+DATA_BASE = os.environ.get("DATA_DIR", "./data")  # data root directory
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # 反向推送的 Webhook 地址
 
 # 消息类型映射
@@ -47,24 +47,45 @@ class WeChatBridge:
         self._running = False
         self._poll_thread: threading.Thread | None = None
         self.ai_manager = None  # 由 main.py 注入 AIChatManager 实例
-        # 每日发送计数器（微信风控 10 条/天）
-        # 结构: { user_id: { "date": "2026-04-12", "count": 5, "warned": False } }
-        self._daily_send_count: dict[str, dict] = {}
-        db.init_db()  # 初始化 SQLite 消息库
+        # 连续发送计数器（iLink 限制：bot 连续发 10 条后用户未回复则无法继续发送）
+        # 结构: { user_id: { "count": 5, "warned": False } }
+        # 仅在用户回复消息时重置，与日历日期无关
+        self._consecutive_send_count: dict[str, dict] = {}
+        # 初始化数据目录（按 bot_id 隔离）
+        self._setup_data_dir()
         self._load_contacts()
+
+    def _setup_data_dir(self, bot_id: str = None):
+        """根据 bot_id 设置数据目录，实现多账号数据隔离
+        目录结构: data/{bot_id}/contacts.json, messages.db, media/, ...
+        无 bot_id 时使用 data/ 根目录（向后兼容）
+        """
+        bid = bot_id or self.client.get_bot_id()
+        if bid:
+            self._data_dir = os.path.join(DATA_BASE, bid)
+            logger.info("数据目录按 bot_id 隔离: %s", self._data_dir)
+        else:
+            self._data_dir = DATA_BASE
+            logger.info("未检测到 bot_id，使用默认数据目录: %s", self._data_dir)
+        os.makedirs(self._data_dir, exist_ok=True)
+
+        # 设置各模块的数据路径
+        self._contacts_file = os.path.join(self._data_dir, "contacts.json")
+        db.init_db(os.path.join(self._data_dir, "messages.db"))
+        media.set_media_dir(os.path.join(self._data_dir, "media"))
 
     # ── 联系人缓存 ──
 
     def _load_contacts(self):
-        if os.path.exists(CONTACTS_FILE):
+        if os.path.exists(self._contacts_file):
             try:
-                with open(CONTACTS_FILE, "r") as f:
+                with open(self._contacts_file, "r") as f:
                     self.contacts = json.load(f)
                 logger.info("已加载 %d 个联系人缓存", len(self.contacts))
             except Exception as e:
                 logger.warning("加载联系人缓存失败: %s", e)
         
-        ctx_file = CONTACTS_FILE.replace("contacts", "context_tokens")
+        ctx_file = os.path.join(self._data_dir, "context_tokens.json")
         if os.path.exists(ctx_file):
             try:
                 with open(ctx_file, "r") as f:
@@ -72,7 +93,7 @@ class WeChatBridge:
             except Exception:
                 pass
                 
-        act_file = CONTACTS_FILE.replace("contacts", "activity")
+        act_file = os.path.join(self._data_dir, "activity.json")
         if os.path.exists(act_file):
             try:
                 with open(act_file, "r") as f:
@@ -81,15 +102,15 @@ class WeChatBridge:
                 pass
 
     def _save_contacts(self):
-        os.makedirs(os.path.dirname(CONTACTS_FILE), exist_ok=True)
-        with open(CONTACTS_FILE, "w") as f:
+        os.makedirs(self._data_dir, exist_ok=True)
+        with open(self._contacts_file, "w") as f:
             json.dump(self.contacts, f, ensure_ascii=False, indent=2)
             
-        ctx_file = CONTACTS_FILE.replace("contacts", "context_tokens")
+        ctx_file = os.path.join(self._data_dir, "context_tokens.json")
         with open(ctx_file, "w") as f:
             json.dump(self.context_tokens, f, ensure_ascii=False, indent=2)
             
-        act_file = CONTACTS_FILE.replace("contacts", "activity")
+        act_file = os.path.join(self._data_dir, "activity.json")
         with open(act_file, "w") as f:
             json.dump(self.activity_tracker, f, ensure_ascii=False, indent=2)
 
@@ -242,16 +263,15 @@ class WeChatBridge:
             webhook_enabled = "✅启用" if ai_config.get("webhook_url") else "❌未配置"
             api_key_status = "✅已填" if ai_config.get("api_key") else "❌空缺"
             
-            # 配额情况（当天）
+            # 配额情况（连续发送计数）
             quota_used = 0
-            if user_id in self._daily_send_count:
-                if self._daily_send_count[user_id].get("date") == datetime.now().strftime("%Y-%m-%d"):
-                    quota_used = self._daily_send_count[user_id].get("count", 0)
+            if user_id in self._consecutive_send_count:
+                quota_used = self._consecutive_send_count[user_id].get("count", 0)
             
             return (
                 f"🤖 WeChat Bridge\n"
                 f"⏳ 运行: {uptime_str}\n"
-                f"📊 额度: 已接收1条信息，现已重置，可继续接收 9 次主动推送\n"
+                f"📊 额度: 已连续发送 {quota_used}/10 条 (剩余 9 条)\n"
                 f"⏰ 保活提醒: {notify_enabled}\n"
                 f"🔗 Webhook: {webhook_enabled}\n"
                 f"---\n"
@@ -296,19 +316,14 @@ class WeChatBridge:
             if len(parts) > 1:
                 action = parts[1].lower()
                 import config as cfg
-                import json
                 c = cfg.load_config()
                 if action in ("on", "1", "true", "开启"):
                     c["keepalive_remind_minutes"] = 1380
-                    with cfg._config_lock:
-                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
-                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    cfg.save_config(c)
                     return "✅ 保活提醒已开启 (距最后发言23h时提醒)"
                 elif action in ("off", "0", "false", "关闭"):
                     c["keepalive_remind_minutes"] = 0
-                    with cfg._config_lock:
-                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
-                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    cfg.save_config(c)
                     return "❌ 保活提醒已关闭"
             return "❓ 用法: /keepalive [on|off]"
         elif cmd.startswith("/ai ") or cmd.startswith("/ai状态 "):
@@ -316,22 +331,17 @@ class WeChatBridge:
             if len(parts) > 1:
                 action = parts[1].lower()
                 import config as cfg
-                import json
                 c = cfg.load_config()
                 if action in ("on", "1", "true", "开启"):
                     c["enabled"] = True
-                    with cfg._config_lock:
-                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
-                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    cfg.save_config(c)
                     msg = "✅ AI 助手已开启！"
                     if not c.get("api_key"):
                         msg += "\n⚠️ 注意：尚未配置 API Key，将无法正常回复，请登录 Web 控制台配置。"
                     return msg
                 elif action in ("off", "0", "false", "关闭"):
                     c["enabled"] = False
-                    with cfg._config_lock:
-                        with open(cfg.CONFIG_FILE, "w", encoding="utf-8") as f:
-                            json.dump(c, f, indent=2, ensure_ascii=False)
+                    cfg.save_config(c)
                     return "❌ AI 助手已关闭"
             return "❓ AI状态见/status，开关请基于网页，或者: /ai [on|off]"
         else:
@@ -388,14 +398,10 @@ class WeChatBridge:
                     "last_receive_time": now,
                     "reminded": False
                 }
-                # 用户发消息了，重置当日发送计数器
-                today = datetime.now().strftime("%Y-%m-%d")
-                if from_user in self._daily_send_count:
-                    entry = self._daily_send_count[from_user]
-                    if entry.get("date") == today:
-                        entry["count"] = 0
-                        entry["warned"] = False
-                        logger.info("用户 [%s] 回复了消息，重置当日发送计数器", from_user[:20])
+                # 用户发消息了，重置连续发送计数器
+                if from_user in self._consecutive_send_count:
+                    self._consecutive_send_count[from_user] = {"count": 0, "warned": False}
+                    logger.info("用户 [%s] 回复了消息，重置连续发送计数器", from_user[:20])
                 should_save = True
                 
             if should_save:
@@ -500,13 +506,10 @@ class WeChatBridge:
     # ── 发送消息 ──
 
     def _increment_send_count(self, user_id: str) -> int:
-        """增加当日发送计数，返回新的计数值"""
-        today = datetime.now().strftime("%Y-%m-%d")
-        entry = self._daily_send_count.get(user_id, {})
-        if entry.get("date") != today:
-            entry = {"date": today, "count": 0, "warned": False}
+        """增加连续发送计数，返回新的计数值（仅在用户回复时重置）"""
+        entry = self._consecutive_send_count.get(user_id, {"count": 0, "warned": False})
         entry["count"] += 1
-        self._daily_send_count[user_id] = entry
+        self._consecutive_send_count[user_id] = entry
         return entry["count"]
 
 
@@ -523,13 +526,21 @@ class WeChatBridge:
 
         context_token = self.get_context_token(user_id)
         
-        # 检查当日发送计数，到 10 条时直接附带在第10条消息末尾
-        count = self._increment_send_count(user_id)
+        # 检查连续发送计数（iLink 限制：连续 10 条未回复则阻断）
         contact_name = self.contacts.get(user_id, to)
-        logger.info("准备向 [%s] 发送消息 (%d/10 当日)", contact_name, count)
+        entry = self._consecutive_send_count.get(user_id, {"count": 0, "warned": False})
+        current_count = entry["count"]
 
-        entry = self._daily_send_count.get(user_id, {})
-        if count >= 10 and not entry.get("warned"):
+        # 已达 10 条且用户未回复，阻断后续发送
+        if current_count >= 10:
+            logger.warning("连续发送已达 %d 条，拦截发送 [%s]", current_count, contact_name)
+            return {"ok": False, "error": f"已连续发送 {current_count} 条消息，用户未回复前无法继续发送。请等待对方回复任意内容后重试。"}
+
+        count = self._increment_send_count(user_id)
+        logger.info("准备向 [%s] 发送消息 (%d/10 连续)", contact_name, count)
+
+        # 第 10 条：附带风控提醒
+        if count >= 10:
             entry["warned"] = True
             text += (
                 "\n\n━━━━━━━━━━━━━━\n"
