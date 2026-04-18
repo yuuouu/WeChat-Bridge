@@ -1,46 +1,41 @@
 @echo off
-chcp 65001 >nul 2>&1
-echo.
-echo  💬 WeChat Bridge
-echo  ══════════════════════════════════
-echo.
+setlocal
 
-:: 检查 Python
-where python >nul 2>&1
-if errorlevel 1 (
-    echo  [X] 未检测到 Python，请先安装 Python 3.10+
-    echo      https://www.python.org/downloads/
-    pause
-    exit /b 1
-)
-
-:: 确保在项目根目录（脚本在 scripts/ 下，需回到上一级）
 cd /d "%~dp0.."
 
-:: 安装依赖（静默）
-pip install -q -r app\requirements.txt >nul 2>&1
+set "PYTHON_EXE="
+set "PYTHONW_EXE="
 
-:: 创建数据目录
-if not exist data mkdir data
+if exist ".venv\Scripts\python.exe" set "PYTHON_EXE=%CD%\.venv\Scripts\python.exe"
+if exist ".venv\Scripts\pythonw.exe" set "PYTHONW_EXE=%CD%\.venv\Scripts\pythonw.exe"
 
-:: 后台启动服务（pythonw 无窗口，如果不存在则用 python + start /b）
-echo  [OK] 启动服务中...
-where pythonw >nul 2>&1
-if errorlevel 1 (
-    :: 没有 pythonw，用 start /b 后台运行
-    start "WeChat Bridge" /min python app\main.py
-) else (
-    :: pythonw 完全无窗口运行
-    start "" pythonw app\main.py
+if not defined PYTHON_EXE (
+    where python >nul 2>&1
+    if errorlevel 1 (
+        echo [X] Python 3.10+ not found.
+        exit /b 1
+    )
+    for /f "delims=" %%i in ('where python') do (
+        if not defined PYTHON_EXE set "PYTHON_EXE=%%i"
+    )
+    where pythonw >nul 2>&1
+    if not errorlevel 1 (
+        for /f "delims=" %%i in ('where pythonw') do (
+            if not defined PYTHONW_EXE set "PYTHONW_EXE=%%i"
+        )
+    )
 )
 
-echo  [OK] 服务已在后台运行
-echo.
-echo  浏览器将自动打开 http://localhost:5200
-echo  日志文件: data\run.log
-echo.
-echo  停止服务: taskkill /f /im python.exe (或在任务管理器结束)
-echo.
+"%PYTHON_EXE%" -m pip install -q -r app\requirements.txt >nul 2>&1
+if not exist data mkdir data
 
-:: 等 2 秒让服务启动，CMD 窗口自动关闭
-timeout /t 2 /nobreak >nul
+if defined PYTHONW_EXE (
+    start "" "%PYTHONW_EXE%" app\main.py
+) else (
+    start "WeChat Bridge" /min "%PYTHON_EXE%" app\main.py
+)
+
+ping -n 3 127.0.0.1 >nul
+start "" http://localhost:5200
+
+exit /b 0
