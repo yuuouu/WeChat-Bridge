@@ -108,9 +108,8 @@ def main():
         logger.error("❌ AI 模块加载失败: %s", e)
     # ==========================
 
-    # 注入全局引用供 web 模块使用
-    web.client = ilink_client
-    web.bridge = wechat_bridge
+    # 注入 Web 层运行上下文
+    web.set_context(ilink_client, wechat_bridge, os.environ.get("API_TOKEN", ""))
 
     # 启动消息轮询（后台线程）
     wechat_bridge.start()
