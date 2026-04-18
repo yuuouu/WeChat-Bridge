@@ -227,7 +227,7 @@ class ILinkClient:
             f"{self.base_url}/ilink/bot/sendmessage",
             headers=_headers(self.bot_token),
             json=payload,
-            timeout=15,
+            timeout=8,
         )
         resp.raise_for_status()
         data = resp.json()
