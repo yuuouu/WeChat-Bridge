@@ -55,6 +55,8 @@ docker compose up -d
 安装完成后，浏览器打开 `http://localhost:5200`，扫码登录即可。
 
 > 📖 更多部署方式（手动安装、AI 辅助部署、版本升级）请参阅 **[部署与管理指南](docs/deployment.md)**
+>
+> 🔁 如果你要把业务逻辑放在外部服务里，请直接看 **[异步回写集成指南](docs/webhook-async-reply.md)**
 
 ---
 

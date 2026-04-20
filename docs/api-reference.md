@@ -215,3 +215,7 @@ curl http://localhost:5200/api/status
 - `unknown_command` 模式：仅未知 `/命令` 会转发到外部 Webhook，已知命令仍由 WeChat Bridge 本地处理。
 - `all_messages` 模式：全部文本消息都会转发到外部 Webhook。
 - 推荐使用异步回写：外部服务处理完后，再调用 `POST /api/send` 将结果回发到微信。
+
+完整接入流程、示例脚本与调试方法请参阅：
+
+- [异步回写集成指南](webhook-async-reply.md)
