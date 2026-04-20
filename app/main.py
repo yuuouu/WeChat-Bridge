@@ -39,7 +39,9 @@ sys.path.insert(0, os.path.join(_project_root, "app"))
 
 from ilink import ILinkClient
 from bridge import WeChatBridge
+import config as cfg
 import web
+from version import __version__
 
 
 def main():
@@ -49,10 +51,19 @@ def main():
 
     logger.info("=" * 50)
     logger.info("WeChat Bridge 启动中...")
+    logger.info("版本: %s", __version__)
     logger.info("端口: %d", port)
     logger.info("Token 文件: %s", os.environ.get("TOKEN_FILE", "./data/token.json"))
-    webhook = os.environ.get("WEBHOOK_URL", "")
-    logger.info("Webhook: %s", webhook if webhook else "(未配置)")
+    runtime_cfg = cfg.load_config()
+    webhook_url = runtime_cfg.get("webhook_url", "").strip()
+    webhook_enabled = bool(runtime_cfg.get("webhook_enabled")) and bool(webhook_url)
+    webhook_mode = runtime_cfg.get("webhook_mode", "unknown_command")
+    if webhook_enabled:
+        logger.info("Webhook: %s (%s)", webhook_url, webhook_mode)
+    elif webhook_url:
+        logger.info("Webhook: %s (已配置未启用)", webhook_url)
+    else:
+        logger.info("Webhook: (未配置)")
     logger.info("API Token: %s", "已设置" if os.environ.get("API_TOKEN") else "(未设置，接口无鉴权)")
     logger.info("日志文件: %s", _log_file)
     logger.info("=" * 50)
@@ -99,7 +110,6 @@ def main():
 
     # ==== 新增：注入 AI 模块 ====
     try:
-        import config as cfg
         from ai_chat import AIChatManager
         ai_manager = AIChatManager(cfg.load_config, cfg.save_config)
         wechat_bridge.ai_manager = ai_manager

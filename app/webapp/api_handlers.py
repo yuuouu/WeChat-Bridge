@@ -14,6 +14,7 @@ from webapp.auth import check_web_session, make_session_cookie
 from webapp.markdown_utils import markdown_to_plain, should_plainify_markdown
 from webapp.request_utils import parse_multipart
 from webapp.webhook_parser import parse_webhook_payload
+from version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,9 @@ def handle_web_check(handler, ctx, params):
 
 
 def handle_status(handler, ctx, params):
-    handler._json_response(ctx.bridge.get_runtime_status())
+    payload = ctx.bridge.get_runtime_status()
+    payload["version"] = __version__
+    handler._json_response(payload)
 
 
 def handle_contacts(handler, ctx, params):
@@ -308,6 +311,10 @@ def handle_post_ai_config(handler, ctx, params, body):
         "system_prompt",
         "max_history",
         "keepalive_remind_minutes",
+        "webhook_enabled",
+        "webhook_url",
+        "webhook_mode",
+        "webhook_timeout",
     ):
         if key in data:
             current[key] = data[key]
@@ -316,6 +323,15 @@ def handle_post_ai_config(handler, ctx, params, body):
         new_key = data["api_key"].strip()
         if "*" not in new_key:
             current["api_key"] = new_key
+
+    if "webhook_url" in current:
+        current["webhook_url"] = current["webhook_url"].strip()
+    if current.get("webhook_mode") not in ("unknown_command", "all_messages"):
+        current["webhook_mode"] = "unknown_command"
+    try:
+        current["webhook_timeout"] = max(1, min(30, int(current.get("webhook_timeout", 5))))
+    except (TypeError, ValueError):
+        current["webhook_timeout"] = 5
 
     cfg.save_config(current)
     if ctx.bridge.ai_manager:
