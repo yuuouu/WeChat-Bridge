@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 DATA_BASE = os.environ.get("DATA_DIR", "./data")
 MAX_CONSECUTIVE_SENDS = 10
 WINDOW_DEADLINE_SECONDS = 24 * 3600
-PULL_CHUNK_LIMIT = int(os.environ.get("PULL_CHUNK_LIMIT", "1500"))
+PULL_CHUNK_LIMIT = int(os.environ.get("PULL_CHUNK_LIMIT", "5200"))
 MAGIC_WEBHOOK_COMMAND_PREFIX = "__MAGIC_WEBHOOK_COMMAND__:"
 
 MSG_TYPE_MAP = {
