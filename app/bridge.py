@@ -17,6 +17,7 @@ from datetime import datetime
 
 import requests
 
+import config as cfg
 import db
 import media
 from ilink import ILinkClient
@@ -24,10 +25,10 @@ from ilink import ILinkClient
 logger = logging.getLogger(__name__)
 
 DATA_BASE = os.environ.get("DATA_DIR", "./data")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 MAX_CONSECUTIVE_SENDS = 10
 WINDOW_DEADLINE_SECONDS = 24 * 3600
 PULL_CHUNK_LIMIT = int(os.environ.get("PULL_CHUNK_LIMIT", "1500"))
+MAGIC_WEBHOOK_COMMAND_PREFIX = "__MAGIC_WEBHOOK_COMMAND__:"
 
 MSG_TYPE_MAP = {
     1: "文本",
@@ -121,6 +122,28 @@ class WeChatBridge:
             self.contacts[user_id] = name
             self._save_contacts()
             logger.info("新联系人: %s → %s", user_id, name)
+
+    def _get_webhook_config(self) -> dict:
+        current = cfg.load_config()
+        enabled = bool(current.get("webhook_enabled")) and bool(current.get("webhook_url"))
+        return {
+            "enabled": enabled,
+            "url": current.get("webhook_url", "").strip(),
+            "mode": current.get("webhook_mode", "unknown_command"),
+            "timeout": current.get("webhook_timeout", 5),
+        }
+
+    def _should_forward_unknown_command(self) -> bool:
+        webhook_cfg = self._get_webhook_config()
+        return webhook_cfg["enabled"] and webhook_cfg["mode"] in ("unknown_command", "all_messages")
+
+    def _should_forward_message(self, *, is_command: bool) -> bool:
+        webhook_cfg = self._get_webhook_config()
+        if not webhook_cfg["enabled"]:
+            return False
+        if webhook_cfg["mode"] == "all_messages":
+            return True
+        return is_command and webhook_cfg["mode"] == "unknown_command"
 
     def find_user_id(self, name_or_id: str) -> str | None:
         """通过名称或 ID 查找 user_id。"""
@@ -787,7 +810,14 @@ class WeChatBridge:
             else:
                 notify_enabled = "❌关闭"
 
-            webhook_enabled = "✅启用" if ai_config.get("webhook_url") else "❌未配置"
+            webhook_cfg = self._get_webhook_config()
+            if webhook_cfg["enabled"]:
+                mode_text = "全部消息" if webhook_cfg["mode"] == "all_messages" else "仅未知命令"
+                webhook_enabled = f"✅启用 ({mode_text})"
+            elif webhook_cfg["url"]:
+                webhook_enabled = "⏸️已配置未启用"
+            else:
+                webhook_enabled = "❌未配置"
             api_key_status = "✅已填" if ai_config.get("api_key") else "❌空缺"
 
             return (
@@ -882,12 +912,21 @@ class WeChatBridge:
                     return "❌ AI 助手已关闭"
             return "❓ AI状态见/status，开关请基于网页，或者: /ai [on|off]"
 
+        if self._should_forward_unknown_command():
+            return f"{MAGIC_WEBHOOK_COMMAND_PREFIX}{text}"
         return f"❓ 未知指令: {text}\n发送 /help 查看可用指令"
 
-    def _trigger_webhook(self, from_user: str, from_name: str, text: str, msg: dict):
+    def _trigger_webhook(self, from_user: str, from_name: str, text: str, msg: dict, *, is_command: bool = False):
         """将消息通过标准 Webhook 转发给外部系统。"""
-        if not WEBHOOK_URL:
+        webhook_cfg = self._get_webhook_config()
+        if not self._should_forward_message(is_command=is_command):
             return
+        command_name = ""
+        command_args = ""
+        if is_command and text.startswith("/"):
+            parts = text.strip().split(maxsplit=1)
+            command_name = parts[0]
+            command_args = parts[1] if len(parts) > 1 else ""
         payload = {
             "source": "wechat-bridge",
             "from_user": from_user,
@@ -896,10 +935,13 @@ class WeChatBridge:
             "msg_id": msg.get("msg_id", ""),
             "timestamp": int(time.time()),
             "msg_type": msg.get("message_type"),
+            "is_command": is_command,
+            "command": command_name,
+            "args": command_args,
         }
         try:
-            requests.post(WEBHOOK_URL, json=payload, timeout=5)
-            logger.info("已触发外部 Webhook: %s", WEBHOOK_URL)
+            requests.post(webhook_cfg["url"], json=payload, timeout=webhook_cfg["timeout"])
+            logger.info("已触发外部 Webhook: %s", webhook_cfg["url"])
         except Exception as exc:
             logger.warning("外部 Webhook 触发失败: %s", exc)
 
@@ -981,6 +1023,13 @@ class WeChatBridge:
                         logger.error("Retry 重试失败: %s", exc)
 
                 threading.Thread(target=_async_retry_worker, daemon=True).start()
+                return
+
+            if cmd_reply.startswith(MAGIC_WEBHOOK_COMMAND_PREFIX):
+                def _async_command_webhook_worker():
+                    self._trigger_webhook(from_user, from_name, text, msg, is_command=True)
+
+                threading.Thread(target=_async_command_webhook_worker, daemon=True).start()
                 return
 
             result = self.send(from_user, cmd_reply, source="command")

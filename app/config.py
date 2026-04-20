@@ -59,6 +59,10 @@ DEFAULT_CONFIG = {
     "max_tokens_per_day": 100000,
     "usage": {},
     "keepalive_remind_minutes": 1380,  # 0=关闭, 60~1430=用户最后消息后N分钟发送提醒
+    "webhook_enabled": False,
+    "webhook_url": "",
+    "webhook_mode": "unknown_command",
+    "webhook_timeout": 5,
 }
 
 
@@ -84,6 +88,28 @@ def load_config() -> dict:
         config["model"] = os.environ["AI_MODEL"]
     if os.environ.get("AI_ENABLED"):
         config["enabled"] = os.environ["AI_ENABLED"].lower() in ("true", "1", "yes")
+    if os.environ.get("WEBHOOK_URL"):
+        config["webhook_url"] = os.environ["WEBHOOK_URL"]
+    if os.environ.get("WEBHOOK_ENABLED"):
+        config["webhook_enabled"] = os.environ["WEBHOOK_ENABLED"].lower() in ("true", "1", "yes")
+    elif config.get("webhook_url"):
+        # 兼容旧配置：仅配置 URL 时默认视为开启
+        config["webhook_enabled"] = True
+    if os.environ.get("WEBHOOK_MODE"):
+        config["webhook_mode"] = os.environ["WEBHOOK_MODE"].strip() or "unknown_command"
+    if os.environ.get("WEBHOOK_TIMEOUT"):
+        try:
+            config["webhook_timeout"] = int(os.environ["WEBHOOK_TIMEOUT"])
+        except ValueError:
+            logger.warning("无效的 WEBHOOK_TIMEOUT: %s", os.environ["WEBHOOK_TIMEOUT"])
+
+    if config.get("webhook_mode") not in ("unknown_command", "all_messages"):
+        config["webhook_mode"] = "unknown_command"
+
+    try:
+        config["webhook_timeout"] = max(1, min(30, int(config.get("webhook_timeout", 5))))
+    except (TypeError, ValueError):
+        config["webhook_timeout"] = 5
         
     # 向后兼容：将旧的双布尔迁移为新字段，如有旧字段则自动升级保存一次
     needs_save = False

@@ -96,7 +96,7 @@ docker compose up -d
 
 - 🔗 **双向消息桥接** — 微信收发消息全打通，支持文本、图片、视频解析及指令路由
 - 🌐 **标准 HTTP API** — RESTful 接口，curl 一行即可发微信消息
-- 🔔 **反向 Webhook 推送** — 收到微信消息时主动 POST 到你的服务（Dify / FastGPT / Node-RED）
+- 🔔 **可选外部 Webhook 转发** — 支持在 Web UI 或环境变量中开启，按“仅未知命令 / 全部消息”模式主动 POST 到你的服务（Dify / FastGPT / Node-RED）
 - 💬 **桌面级消息弹窗** — 网页驻留后台时，支持调用主流操作系统的原生系统通知
 - 🤖 **内置 AI 助手** — 原生集成 OpenAI / Gemini / Claude / DeepSeek，开箱即用
 - 📱 **Web 管理面板** — 扫码登录、实时消息流、图片收发、AI 配置、保活设置，一站式管理

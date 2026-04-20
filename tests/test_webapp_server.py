@@ -1,16 +1,22 @@
 import json
 import sys
 import threading
+import types
 import unittest
 import urllib.error
 import urllib.request
+import tempfile
 from pathlib import Path
 
+from tests.crypto_stub import install_crypto_stub
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+install_crypto_stub()
+sys.modules.setdefault("qrcode", types.ModuleType("qrcode"))
+import config as cfg
 from webapp.context import WebAppContext
 from webapp.server import BridgeHandler, ThreadingHTTPServer
 
@@ -32,6 +38,7 @@ class _FakeBridge:
         self._running = True
         self.ag_inbox = []
         self.sent = []
+        self.ai_manager = None
 
     def send(self, to, text, source="api", title=""):
         self.sent.append((to, text, source, title))
@@ -63,10 +70,17 @@ class _FakeBridge:
 
 class WebAppServerTests(unittest.TestCase):
     def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self._old_config_file = cfg.CONFIG_FILE
+        cfg.CONFIG_FILE = str(Path(self.tempdir.name) / "ai_config.json")
+        cfg.save_config(cfg.DEFAULT_CONFIG.copy())
         self.client = _FakeClient(logged_in=True)
         self.bridge = _FakeBridge()
         self.context = WebAppContext(client=self.client, bridge=self.bridge, api_token="secret-token")
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)
+        try:
+            self.server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)
+        except PermissionError as exc:
+            raise unittest.SkipTest(f"socket bind not permitted in sandbox: {exc}")
         self.server.app_context = self.context  # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -76,6 +90,8 @@ class WebAppServerTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=3)
+        cfg.CONFIG_FILE = self._old_config_file
+        self.tempdir.cleanup()
 
     def _request(self, path, method="GET", data=None, headers=None):
         req = urllib.request.Request(
@@ -120,6 +136,7 @@ class WebAppServerTests(unittest.TestCase):
         self.assertTrue(data["logged_in"])
         self.assertEqual(data["bot_id"], "bot-test")
         self.assertEqual(data["contacts_count"], 1)
+        self.assertIn("version", data)
 
     def test_api_send_requires_api_token(self):
         payload = json.dumps({"to": "Alice", "text": "hello"}).encode("utf-8")
@@ -147,6 +164,29 @@ class WebAppServerTests(unittest.TestCase):
         data = json.loads(body)
         self.assertTrue(data["ok"])
         self.assertEqual(self.bridge.sent, [("Alice", "hello", "api", "")])
+
+    def test_api_ai_config_persists_webhook_settings(self):
+        payload = json.dumps(
+            {
+                "webhook_enabled": True,
+                "webhook_url": " https://example.com/webhook ",
+                "webhook_mode": "all_messages",
+                "webhook_timeout": 9,
+            }
+        ).encode("utf-8")
+        status, _, body = self._request(
+            "/api/ai_config",
+            method="POST",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200, body)
+
+        saved = cfg.load_config()
+        self.assertTrue(saved["webhook_enabled"])
+        self.assertEqual(saved["webhook_url"], "https://example.com/webhook")
+        self.assertEqual(saved["webhook_mode"], "all_messages")
+        self.assertEqual(saved["webhook_timeout"], 9)
 
 
 if __name__ == "__main__":

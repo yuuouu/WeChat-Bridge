@@ -179,7 +179,10 @@ curl http://localhost:5200/api/status
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
 | `PORT` | `5200` | 服务监听端口 |
-| `WEBHOOK_URL` | _(空)_ | 收到消息时主动 POST 的目标地址 |
+| `WEBHOOK_URL` | _(空)_ | 外部 Webhook 地址，也可在 Web UI 中配置 |
+| `WEBHOOK_ENABLED` | `false` | 是否开启外部 Webhook 转发 |
+| `WEBHOOK_MODE` | `unknown_command` | 转发模式：`unknown_command` / `all_messages` |
+| `WEBHOOK_TIMEOUT` | `5` | Webhook 请求超时（秒，1~30） |
 | `API_TOKEN` | _(空)_ | API 鉴权 Token，未设置则无鉴权 |
 | `TOKEN_FILE` | `/data/token.json` | 登录凭证持久化路径 |
 | `CONTACTS_FILE` | `/data/contacts.json` | 联系人缓存路径 |
@@ -190,7 +193,7 @@ curl http://localhost:5200/api/status
 
 ## Webhook 推送格式
 
-当配置了 `WEBHOOK_URL` 后，收到微信消息时会向该地址发送 POST 请求：
+当开启外部 Webhook 后，收到微信消息时会向该地址发送 POST 请求。该能力默认关闭，可在 Web UI 的“系统设置 -> 外部 Webhook”中启用，也可通过环境变量启用。
 
 ```json
 {
@@ -200,6 +203,15 @@ curl http://localhost:5200/api/status
   "text": "消息内容 (图片为 [图片:文件名], 视频为 [视频:文件名])",
   "msg_id": "消息ID",
   "timestamp": 1712345678,
-  "msg_type": 1
+  "msg_type": 1,
+  "is_command": false,
+  "command": "",
+  "args": ""
 }
 ```
+
+说明：
+
+- `unknown_command` 模式：仅未知 `/命令` 会转发到外部 Webhook，已知命令仍由 WeChat Bridge 本地处理。
+- `all_messages` 模式：全部文本消息都会转发到外部 Webhook。
+- 推荐使用异步回写：外部服务处理完后，再调用 `POST /api/send` 将结果回发到微信。

@@ -39,7 +39,10 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - WEBHOOK_URL=           # 可选：消息推送地址
+      - WEBHOOK_URL=           # 可选：外部 Webhook 地址
+      - WEBHOOK_ENABLED=false  # 可选：是否启用 Webhook 转发
+      - WEBHOOK_MODE=unknown_command  # 可选：unknown_command / all_messages
+      - WEBHOOK_TIMEOUT=5      # 可选：Webhook 请求超时（秒）
       - API_TOKEN=             # 可选：API 鉴权 Token
       - TZ=Asia/Shanghai
 EOF
@@ -48,6 +51,8 @@ docker compose up -d
 ```
 
 安装完成后，浏览器打开 `http://localhost:5200`，扫码登录即可。
+
+> Webhook 也可以在 Web 管理面板中配置。环境变量适合容器化部署统一管理，Web UI 适合单机快速启用或临时调试。
 
 ---
 

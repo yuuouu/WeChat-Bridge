@@ -6,13 +6,16 @@ import time
 import unittest
 from pathlib import Path
 
+from tests.crypto_stub import install_crypto_stub
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+install_crypto_stub()
 import db
 import bridge as bridge_module
+import config as cfg
 from bridge import WINDOW_DEADLINE_SECONDS
 
 
@@ -42,7 +45,10 @@ class BridgeDeliveryTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self._old_data_dir = os.environ.get("DATA_DIR")
+        self._old_config_file = cfg.CONFIG_FILE
         os.environ["DATA_DIR"] = self.tempdir.name
+        cfg.CONFIG_FILE = str(Path(self.tempdir.name) / "ai_config.json")
+        cfg.save_config(cfg.DEFAULT_CONFIG.copy())
         self.client = _FakeClient()
         bridge_module.DATA_BASE = self.tempdir.name
         self.bridge = bridge_module.WeChatBridge(self.client)
@@ -58,6 +64,7 @@ class BridgeDeliveryTests(unittest.TestCase):
         else:
             os.environ["DATA_DIR"] = self._old_data_dir
             bridge_module.DATA_BASE = self._old_data_dir
+        cfg.CONFIG_FILE = self._old_config_file
         self.tempdir.cleanup()
 
     def test_tenth_message_appends_warning_and_creates_session(self):
@@ -184,6 +191,67 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(len(uncertain), 1)
         self.assertEqual(uncertain[0]["text"], "hello-timeout")
         self.assertTrue(uncertain[0]["meta"]["delivery_uncertain"])
+
+    def test_unknown_command_can_be_handed_off_to_webhook(self):
+        triggered = []
+        current = cfg.load_config()
+        current["webhook_enabled"] = True
+        current["webhook_url"] = "https://example.com/hook"
+        current["webhook_mode"] = "unknown_command"
+        cfg.save_config(current)
+
+        def _fake_trigger(from_user, from_name, text, msg, *, is_command=False):
+            triggered.append(
+                {
+                    "from_user": from_user,
+                    "from_name": from_name,
+                    "text": text,
+                    "is_command": is_command,
+                }
+            )
+
+        self.bridge._trigger_webhook = _fake_trigger
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-1",
+                "msg_id": "m1",
+                "item_list": [{"type": 1, "text_item": {"text": "/weather shanghai"}}],
+            }
+        )
+        time.sleep(0.05)
+
+        self.assertEqual(len(triggered), 1)
+        self.assertEqual(triggered[0]["text"], "/weather shanghai")
+        self.assertTrue(triggered[0]["is_command"])
+        self.assertEqual(len(self.client.sent_texts), 0)
+
+    def test_all_messages_mode_forwards_regular_messages(self):
+        triggered = []
+        current = cfg.load_config()
+        current["webhook_enabled"] = True
+        current["webhook_url"] = "https://example.com/hook"
+        current["webhook_mode"] = "all_messages"
+        cfg.save_config(current)
+
+        def _fake_trigger(from_user, from_name, text, msg, *, is_command=False):
+            triggered.append({"text": text, "is_command": is_command})
+
+        self.bridge._trigger_webhook = _fake_trigger
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-1",
+                "msg_id": "m2",
+                "item_list": [{"type": 1, "text_item": {"text": "hello bridge"}}],
+            }
+        )
+
+        self.assertEqual(triggered, [{"text": "hello bridge", "is_command": False}])
 
 
 if __name__ == "__main__":

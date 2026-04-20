@@ -156,6 +156,35 @@ def render_logged_in():
 
     <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
 
+    <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">🔗 外部 Webhook</h3>
+    <div class="form-group">
+      <div class="toggle-switch" onclick="toggleWebhook()">
+        <div class="toggle-track" id="webhookToggle"><div class="toggle-knob"></div></div>
+        <span id="webhookToggleLabel">Webhook 已关闭</span>
+      </div>
+      <div style="color:#888; font-size:12px; margin-top:6px;">开启后，消息会按配置模式异步转发到外部服务，外部服务可再调用 /api/send 回写微信。</div>
+    </div>
+
+    <div id="webhookSettingsGroup" style="display: none;">
+      <div class="form-group">
+        <label class="form-label">Webhook 地址</label>
+        <input class="form-input" id="webhookUrl" placeholder="https://example.com/webhook">
+      </div>
+      <div class="form-group">
+        <label class="form-label">转发模式</label>
+        <select class="form-select" id="webhookMode">
+          <option value="unknown_command">仅未知命令</option>
+          <option value="all_messages">全部消息</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">请求超时（秒）</label>
+        <input class="form-input" id="webhookTimeout" type="number" min="1" max="30" value="5">
+      </div>
+    </div>
+
+    <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
+
     <div style="text-align:center; color:#666; font-size:12px; line-height:1.8;">
       <a href="https://github.com/yuuouu/WeChat-Bridge" target="_blank" rel="noopener"
          style="color:#818cf8; text-decoration:none; transition:color 0.2s;"
@@ -182,6 +211,7 @@ def render_logged_in():
       deepseek: [{id:'deepseek-chat',name:'DeepSeek Chat (V3)'},{id:'deepseek-reasoner',name:'DeepSeek Reasoner (R1)'}],
     };
     let aiEnabled = false;
+    let webhookEnabled = false;
     let keepaliveMinutes = 0;
 
     // 生成保活时间选择器选项
@@ -256,6 +286,13 @@ def render_logged_in():
       document.getElementById('aiSettingsGroup').style.display = aiEnabled ? 'block' : 'none';
     }
 
+    function toggleWebhook() {
+      webhookEnabled = !webhookEnabled;
+      document.getElementById('webhookToggle').classList.toggle('on', webhookEnabled);
+      document.getElementById('webhookToggleLabel').textContent = webhookEnabled ? 'Webhook 已启用' : 'Webhook 已关闭';
+      document.getElementById('webhookSettingsGroup').style.display = webhookEnabled ? 'block' : 'none';
+    }
+
     let notifyEnabled = localStorage.getItem('notifyEnabled') === 'true';
 
     async function toggleNotify() {
@@ -294,6 +331,11 @@ def render_logged_in():
         document.getElementById('aiToggle').classList.toggle('on', aiEnabled);
         document.getElementById('aiToggleLabel').textContent = aiEnabled ? 'AI 已启用' : 'AI 已关闭';
         document.getElementById('aiSettingsGroup').style.display = aiEnabled ? 'block' : 'none';
+
+        webhookEnabled = !!cfg.webhook_enabled;
+        document.getElementById('webhookToggle').classList.toggle('on', webhookEnabled);
+        document.getElementById('webhookToggleLabel').textContent = webhookEnabled ? 'Webhook 已启用' : 'Webhook 已关闭';
+        document.getElementById('webhookSettingsGroup').style.display = webhookEnabled ? 'block' : 'none';
         
         setKAFromMinutes(cfg.keepalive_remind_minutes || 0);
 
@@ -304,6 +346,9 @@ def render_logged_in():
         document.getElementById('aiBaseUrl').value = cfg.base_url || '';
         document.getElementById('aiPrompt').value = cfg.system_prompt || '';
         document.getElementById('aiHistory').value = cfg.max_history || 10;
+        document.getElementById('webhookUrl').value = cfg.webhook_url || '';
+        document.getElementById('webhookMode').value = cfg.webhook_mode || 'unknown_command';
+        document.getElementById('webhookTimeout').value = cfg.webhook_timeout || 5;
         
         renderNotifyToggle();
       } catch(e) {}
@@ -356,7 +401,15 @@ def render_logged_in():
         base_url: document.getElementById('aiBaseUrl').value,
         system_prompt: document.getElementById('aiPrompt').value,
         max_history: parseInt(document.getElementById('aiHistory').value) || 10,
+        webhook_enabled: webhookEnabled,
+        webhook_url: document.getElementById('webhookUrl').value.trim(),
+        webhook_mode: document.getElementById('webhookMode').value,
+        webhook_timeout: parseInt(document.getElementById('webhookTimeout').value) || 5,
       };
+      if (cfg.webhook_enabled && !cfg.webhook_url) {
+        showToast('请先填写 Webhook 地址', 'error');
+        return;
+      }
       try {
         const res = await fetch('/api/ai_config', {
           method: 'POST',
@@ -743,5 +796,4 @@ def render_logged_in():
     });
 """
     return HTML_TEMPLATE % (content, js)
-
 
