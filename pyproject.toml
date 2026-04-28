@@ -1,0 +1,33 @@
+[project]
+name = "wechat-bridge"
+version = "1.1.0"
+requires-python = ">=3.10"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long (由 formatter 管理)
+    "B904",  # raise without from (历史代码兼容)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bridge", "config", "db", "ilink", "media", "delivery", "commands", "keepalive"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["app"]

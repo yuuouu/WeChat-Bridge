@@ -171,6 +171,51 @@ class BridgeDeliveryTests(unittest.TestCase):
             )
         )
 
+    def test_ret_minus_two_without_local_window_expiry_is_marked_as_api_limit(self):
+        def _raise_limit(to_user_id: str, text: str, context_token: str = "") -> dict:
+            raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。")
+
+        self.client.send_text = _raise_limit
+        self.bridge.activity_tracker["uid-1"] = {
+            "last_receive_time": int(time.time()) - 60,
+            "reminded": False,
+        }
+
+        result = self.bridge.send("Alice", "hello-limit")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["buffered"])
+        summary = self.bridge.get_delivery_summary("uid-1")
+        self.assertEqual(summary["blocked_reason"], "api_limit")
+
+        messages = db.get_messages(limit=20)
+        buffered = [message for message in messages if message["delivery_stage"] == "buffered"]
+        self.assertEqual(len(buffered), 1)
+        self.assertEqual(buffered[0]["meta"]["blocked_reason"], "api_limit")
+
+    def test_ret_minus_two_on_tenth_message_keeps_quota_warning(self):
+        for idx in range(9):
+            result = self.bridge.send("Alice", f"hello-{idx}")
+            self.assertTrue(result["ok"])
+
+        def _raise_limit(to_user_id: str, text: str, context_token: str = "") -> dict:
+            raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。")
+
+        self.client.send_text = _raise_limit
+        result = self.bridge.send("Alice", "hello-10")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["buffered"])
+        summary = self.bridge.get_delivery_summary("uid-1")
+        self.assertEqual(summary["blocked_reason"], "quota_10")
+
+        messages = db.get_messages(limit=20)
+        buffered = [message for message in messages if message["delivery_stage"] == "buffered"]
+        self.assertEqual(len(buffered), 1)
+        self.assertEqual(buffered[0]["meta"]["blocked_reason"], "quota_10")
+        self.assertTrue(buffered[0]["meta"]["limit_warning"])
+        self.assertIn("⚠️【系统提醒】", buffered[0]["text"])
+
     def test_read_timeout_is_recorded_as_uncertain_delivery(self):
         def _raise_timeout(to_user_id: str, text: str, context_token: str = "") -> dict:
             self.client.sent_texts.append((to_user_id, text, context_token))
