@@ -577,6 +577,7 @@ def render_logged_in():
             if (m.meta && m.meta.limit_warning) tags.push('<span class="msg-tag warning">系统提醒</span>');
             if (m.meta && m.meta.blocked_reason === 'window_24h') tags.push('<span class="msg-tag warning">24h失效</span>');
             if (m.meta && m.meta.blocked_reason === 'quota_10') tags.push('<span class="msg-tag warning">10条限制</span>');
+            if (m.meta && m.meta.blocked_reason === 'api_limit') tags.push('<span class="msg-tag warning">上游限制</span>');
             
             if (m.media) {
               const mediaUrl = '/media/' + encodeURIComponent(m.media);
