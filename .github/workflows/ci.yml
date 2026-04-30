@@ -31,6 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r app/requirements.txt
-          pip install pytest
-      - name: Run tests
-        run: pytest tests/ -v
+          pip install pytest pytest-cov
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=app --cov-report=term-missing
+
