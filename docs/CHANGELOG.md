@@ -2,6 +2,28 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [1.1.0] - 2026-04-30
+
+### Added
+- 新增可配置的 Webhook 转发功能，支持"仅未知命令"和"全部消息"两种模式
+- 新增运行时版本暴露接口 (`/api/status` 返回 `version` 字段)
+- 新增 GitHub Actions CI：Ruff lint + format 检查 + 多 Python 版本测试 (3.10/3.11/3.12)
+- 新增 Docker 镜像自动构建与推送 (GHCR, amd64 + arm64)
+- 新增 `config.py` 和 `ilink.py` 单元测试，测试用例总数 27 → 60
+- CI 测试新增 `pytest-cov` 覆盖率报告
+
+### Changed
+- 模块化拆分：`commands.py`、`delivery.py`、`keepalive.py` 从 `bridge.py` 分离为独立 Mixin
+- `/pull` 默认分块上限从 `1500` 调整为 `5200`（基于 2026-04-20 现网实测数据）
+- 全量代码格式化（Ruff check + format），统一代码风格
+- `pyproject.toml` 新增 `per-file-ignores` 配置，精确豁免测试和入口文件的 E402
+
+### Fixed
+- 修复 CI lint 失败：解决 103 个 Ruff 检查错误（import 排序、空白行、未使用导入、冗余参数等）
+
+### Docs
+- 新增异步 Webhook 回写集成指南 (`docs/webhook-async-reply.md`)
+
 ## [1.0.1-rc1] - 2026-04-18
 
 ### Added
