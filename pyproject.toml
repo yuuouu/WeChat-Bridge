@@ -25,6 +25,10 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["bridge", "config", "db", "ilink", "media", "delivery", "commands", "keepalive"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]     # 测试文件需要在 import 前操作 sys.path / 安装 stub
+"app/main.py" = ["E402"] # 入口文件需要在 import 前配置日志和 sys.path
+
 [tool.ruff.format]
 quote-style = "double"
 

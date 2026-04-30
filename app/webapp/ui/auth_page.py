@@ -1,6 +1,8 @@
 """认证解锁页面。"""
 
 from webapp.ui.layout import HTML_TEMPLATE
+
+
 def render_auth_page():
     """Web UI 解锁页面（当 API_TOKEN 已设置但浏览器未认证时）"""
     content = """
@@ -60,5 +62,3 @@ def render_auth_page():
     }
 """
     return HTML_TEMPLATE % (content, js)
-
-

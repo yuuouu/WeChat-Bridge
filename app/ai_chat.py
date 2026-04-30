@@ -6,11 +6,12 @@ AI 对话模块
 - 按 user_id 隔离会话历史（OrderedDict LRU 防 OOM）
 - Token 用量日统计
 """
+
 import logging
-import time
-import requests
-from datetime import datetime
 from collections import OrderedDict
+from datetime import datetime
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class AIChatManager:
         config_saver: callable，接受 config dict 并持久化
         """
         import threading
+
         self._lock = threading.Lock()  # 保护 _histories 的并发读写
         self._load_config = config_loader
         self._save_config = config_saver
@@ -87,7 +89,7 @@ class AIChatManager:
             history.append({"role": "user", "content": text})
             # 截断历史
             if len(history) > max_history * 2:
-                history[:] = history[-(max_history * 2):]
+                history[:] = history[-(max_history * 2) :]
             # 拷贝副本用于网络请求，避免长时间 I/O 期间被其他线程修改
             req_history = list(history)
 
@@ -99,6 +101,7 @@ class AIChatManager:
             model = config["model"]
             api_key = config["api_key"]
             from config import get_provider_info
+
             provider_info = get_provider_info(provider)
             effective_url = config.get("base_url") or provider_info["base_url"]
 
@@ -120,8 +123,9 @@ class AIChatManager:
                 resp.raise_for_status()
                 data = resp.json()
                 reply = data.get("content", [{}])[0].get("text", "")
-                tokens_used = data.get("usage", {}).get("input_tokens", 0) + \
-                              data.get("usage", {}).get("output_tokens", 0)
+                tokens_used = data.get("usage", {}).get("input_tokens", 0) + data.get("usage", {}).get(
+                    "output_tokens", 0
+                )
             else:
                 # OpenAI / Gemini / DeepSeek 统一走 OpenAI 兼容 REST API
                 headers = {
@@ -161,8 +165,7 @@ class AIChatManager:
                 history.append({"role": "assistant", "content": reply})
             self._record_usage(config, tokens_used)
 
-            logger.info("AI 回复 [%s] (%s/%s, %d tokens): %s",
-                        user_id[:16], provider, model, tokens_used, reply[:80])
+            logger.info("AI 回复 [%s] (%s/%s, %d tokens): %s", user_id[:16], provider, model, tokens_used, reply[:80])
             return reply
 
         except Exception as e:

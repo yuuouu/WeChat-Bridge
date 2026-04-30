@@ -3,12 +3,13 @@ iLink Bot API 封装
 纯 HTTP/JSON 调用腾讯 iLink 服务，无需 OpenClaw CLI。
 """
 
-import os
-import json
-import time
-import struct
 import base64
+import json
 import logging
+import os
+import struct
+import time
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ class ILinkClient:
         """从文件恢复 token"""
         if os.path.exists(TOKEN_FILE):
             try:
-                with open(TOKEN_FILE, "r") as f:
+                with open(TOKEN_FILE) as f:
                     data = json.load(f)
                 self.bot_token = data.get("bot_token")
                 self.base_url = data.get("base_url", BASE_URL)
@@ -91,12 +92,16 @@ class ILinkClient:
         """持久化 token 到文件"""
         os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
         with open(TOKEN_FILE, "w") as f:
-            json.dump({
-                "bot_token": self.bot_token,
-                "base_url": self.base_url,
-                "bot_id": self.bot_id,
-                "get_updates_buf": self.get_updates_buf,
-            }, f, indent=2)
+            json.dump(
+                {
+                    "bot_token": self.bot_token,
+                    "base_url": self.base_url,
+                    "bot_id": self.bot_id,
+                    "get_updates_buf": self.get_updates_buf,
+                },
+                f,
+                indent=2,
+            )
 
     def clear_token(self):
         """清除登录态"""
@@ -213,14 +218,12 @@ class ILinkClient:
                 "from_user_id": "",
                 "to_user_id": to_user_id,
                 "client_id": client_id,
-                "message_type": 2,       # BOT 发出
-                "message_state": 2,      # FINISH（完整消息）
+                "message_type": 2,  # BOT 发出
+                "message_state": 2,  # FINISH（完整消息）
                 "context_token": context_token,
-                "item_list": [
-                    {"type": 1, "text_item": {"text": text}}
-                ],
+                "item_list": [{"type": 1, "text_item": {"text": text}}],
             },
-            "base_info": {"channel_version": CHANNEL_VERSION}
+            "base_info": {"channel_version": CHANNEL_VERSION},
         }
 
         resp = self._session.post(
@@ -236,9 +239,11 @@ class ILinkClient:
         if ret != 0 or errcode != 0:
             logger.error("发送消息失败: %s", json.dumps(data, ensure_ascii=False))
             if ret == -2:
-                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。")
+                raise RuntimeError(
+                    "API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。"
+                )
             raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
-            
+
         logger.info("发送消息到 %s: %s (ret=%s)", to_user_id[:20], text[:50], ret)
         return data
 
@@ -251,7 +256,7 @@ class ILinkClient:
         config_payload = {
             "ilink_user_id": to_user_id,
             "context_token": context_token,
-            "base_info": {"channel_version": "1.0.0"}
+            "base_info": {"channel_version": "1.0.0"},
         }
         config_resp = self._session.post(
             f"{self.base_url}/ilink/bot/getconfig",
@@ -266,7 +271,7 @@ class ILinkClient:
             "ilink_user_id": to_user_id,
             "typing_ticket": typing_ticket,
             "status": 1,
-            "base_info": {"channel_version": "1.0.0"}
+            "base_info": {"channel_version": "1.0.0"},
         }
 
         resp = self._session.post(
@@ -278,12 +283,12 @@ class ILinkClient:
         data = resp.json()
         ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
-        
+
         if ret != 0 or errcode != 0:
             if ret == -2:
                 raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法发送状态。")
             raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}")
-            
+
         return data
 
     # ── 媒体上传 ──
@@ -293,7 +298,7 @@ class ILinkClient:
         上传媒体文件到腾讯 CDN
 
         流程: 生成 AES key → 加密文件 → 获取上传 URL → 上传到 CDN → 返回下载凭证
-        
+
         参数:
             file_data: 原始文件字节
             media_type: 1=图片, 2=视频, 3=语音, 4=文件
@@ -313,6 +318,7 @@ class ILinkClient:
 
         # 3. 生成 filekey
         import hashlib
+
         filekey = hashlib.md5(file_data[:1024] + str(time.time()).encode()).hexdigest()
 
         # 4. 获取上传 URL
@@ -327,7 +333,7 @@ class ILinkClient:
             "no_need_thumb": True,
             "aeskey": aes_key.hex(),
             "base_info": {"channel_version": CHANNEL_VERSION},
-            "to_user_id": to_user_id
+            "to_user_id": to_user_id,
         }
         logger.info("getuploadurl req: %s", json.dumps(upload_req))
         resp = self._session.post(
@@ -351,13 +357,14 @@ class ILinkClient:
         cdn_upload_url = upload_data.get("upload_full_url", "")
         if not cdn_upload_url:
             import urllib.parse
+
             cdn_upload_url = f"https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param={urllib.parse.quote(upload_param)}&filekey={urllib.parse.quote(filekey)}"
 
         upload_resp = self._session.post(
             cdn_upload_url,
             headers={
                 "Content-Type": "application/octet-stream",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             },
             data=encrypted_data,
             timeout=60,
@@ -368,15 +375,19 @@ class ILinkClient:
         download_ref = upload_resp.headers.get("X-Encrypted-Param") or upload_resp.headers.get("x-encrypted-param")
 
         if not download_ref:
-            logger.warning("CDN 上传成功但似乎没有返回 x-encrypted-param，使用 upload_param 可能会导致客户端无法下载。Headers: %s", upload_resp.headers)
+            logger.warning(
+                "CDN 上传成功但似乎没有返回 x-encrypted-param，使用 upload_param 可能会导致客户端无法下载。Headers: %s",
+                upload_resp.headers,
+            )
             download_ref = upload_param
 
-        logger.info("媒体上传成功: filekey=%s, size=%d, encrypted_size=%d",
-                     filekey, len(file_data), len(encrypted_data))
+        logger.info(
+            "媒体上传成功: filekey=%s, size=%d, encrypted_size=%d", filekey, len(file_data), len(encrypted_data)
+        )
 
         # WeChat 客户端可能期望 AES_Key 是 hex 字符串的 Base64 编码，参照 openclaw-weixin
         aes_key_hex = aes_key.hex()
-        aes_key_b64 = base64.b64encode(aes_key_hex.encode('utf-8')).decode()
+        aes_key_b64 = base64.b64encode(aes_key_hex.encode("utf-8")).decode()
 
         return {
             "encrypt_query_param": download_ref,
@@ -409,8 +420,8 @@ class ILinkClient:
                 "from_user_id": "",
                 "to_user_id": to_user_id,
                 "client_id": client_id,
-                "message_type": 2,       # BOT 发出
-                "message_state": 2,      # FINISH
+                "message_type": 2,  # BOT 发出
+                "message_state": 2,  # FINISH
                 "context_token": context_token,
                 "item_list": [
                     {
@@ -423,11 +434,11 @@ class ILinkClient:
                                 "encrypt_type": 1,
                             },
                             "mid_size": upload_result["encrypted_size"],
-                        }
+                        },
                     }
                 ],
             },
-            "base_info": {"channel_version": CHANNEL_VERSION}
+            "base_info": {"channel_version": CHANNEL_VERSION},
         }
 
         resp = self._session.post(

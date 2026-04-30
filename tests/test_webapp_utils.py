@@ -2,7 +2,6 @@ import sys
 import unittest
 from pathlib import Path
 
-
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
@@ -41,14 +40,14 @@ class WebAppUtilsTests(unittest.TestCase):
         boundary = "----boundary"
         body = (
             f"--{boundary}\r\n"
-            "Content-Disposition: form-data; name=\"to\"\r\n\r\n"
+            'Content-Disposition: form-data; name="to"\r\n\r\n'
             "Alice\r\n"
             f"--{boundary}\r\n"
-            "Content-Disposition: form-data; name=\"image\"; filename=\"a.png\"\r\n"
+            'Content-Disposition: form-data; name="image"; filename="a.png"\r\n'
             "Content-Type: image/png\r\n\r\n"
             "PNGDATA123\r\n"
             f"--{boundary}--\r\n"
-        ).encode("utf-8")
+        ).encode()
         to, image_data = parse_multipart(body, f"multipart/form-data; boundary={boundary}")
         self.assertEqual(to, "Alice")
         self.assertEqual(image_data, b"PNGDATA123")

@@ -129,4 +129,3 @@ def _parse_generic(data: dict) -> str:
     if len(formatted) > 500:
         formatted = formatted[:500] + "\n... (已截断)"
     return f"📩 收到 Webhook:\n{formatted}"
-

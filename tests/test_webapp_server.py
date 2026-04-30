@@ -1,11 +1,11 @@
 import json
 import sys
+import tempfile
 import threading
 import types
 import unittest
 import urllib.error
 import urllib.request
-import tempfile
 from pathlib import Path
 
 from tests.crypto_stub import install_crypto_stub

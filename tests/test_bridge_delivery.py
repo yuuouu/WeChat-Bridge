@@ -1,11 +1,11 @@
 import os
-import requests
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+import requests
 from tests.crypto_stub import install_crypto_stub
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
@@ -13,9 +13,9 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 install_crypto_stub()
-import db
 import bridge as bridge_module
 import config as cfg
+import db
 from bridge import WINDOW_DEADLINE_SECONDS
 
 
@@ -173,7 +173,9 @@ class BridgeDeliveryTests(unittest.TestCase):
 
     def test_ret_minus_two_without_local_window_expiry_is_marked_as_api_limit(self):
         def _raise_limit(to_user_id: str, text: str, context_token: str = "") -> dict:
-            raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。")
+            raise RuntimeError(
+                "API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。"
+            )
 
         self.client.send_text = _raise_limit
         self.bridge.activity_tracker["uid-1"] = {
@@ -199,7 +201,9 @@ class BridgeDeliveryTests(unittest.TestCase):
             self.assertTrue(result["ok"])
 
         def _raise_limit(to_user_id: str, text: str, context_token: str = "") -> dict:
-            raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。")
+            raise RuntimeError(
+                "API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。"
+            )
 
         self.client.send_text = _raise_limit
         result = self.bridge.send("Alice", "hello-10")

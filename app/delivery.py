@@ -492,10 +492,7 @@ class DeliveryMixin:
                     current_text = ""
                     current_completed_ids = []
 
-                segments = [
-                    block[idx : idx + PULL_CHUNK_LIMIT]
-                    for idx in range(0, len(block), PULL_CHUNK_LIMIT)
-                ]
+                segments = [block[idx : idx + PULL_CHUNK_LIMIT] for idx in range(0, len(block), PULL_CHUNK_LIMIT)]
                 for idx, segment in enumerate(segments):
                     chunks.append(
                         {
@@ -576,7 +573,9 @@ class DeliveryMixin:
             )
         else:
             current_state = self._get_delivery_state(user_id)
-            next_status = "WARNED" if current_state.get("consecutive_send_count", 0) >= MAX_CONSECUTIVE_SENDS else "READY_PULL"
+            next_status = (
+                "WARNED" if current_state.get("consecutive_send_count", 0) >= MAX_CONSECUTIVE_SENDS else "READY_PULL"
+            )
             if next_status == "READY_PULL":
                 db.mark_overflow_session_ready(session_id)
             self._set_delivery_state(

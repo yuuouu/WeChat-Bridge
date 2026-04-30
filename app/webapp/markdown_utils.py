@@ -48,4 +48,3 @@ def should_plainify_markdown(flag) -> bool:
     if isinstance(flag, str):
         return flag.strip().lower() in ("plain", "downgrade", "degrade", "text")
     return False
-

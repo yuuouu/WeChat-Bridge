@@ -9,12 +9,11 @@ from urllib.parse import parse_qs
 import config as cfg
 import db as msg_db
 import media as media_mod
-
+from version import __version__
 from webapp.auth import check_web_session, make_session_cookie
 from webapp.markdown_utils import markdown_to_plain, should_plainify_markdown
 from webapp.request_utils import parse_multipart
 from webapp.webhook_parser import parse_webhook_payload
-from version import __version__
 
 logger = logging.getLogger(__name__)
 

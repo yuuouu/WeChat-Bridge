@@ -27,6 +27,8 @@ def _url_to_qr_base64(url: str) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode()
+
+
 def render_qr_page(ctx: WebAppContext):
     """二维码登录页面"""
     # 每 3 分钟刷新一次二维码

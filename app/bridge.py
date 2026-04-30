@@ -19,8 +19,13 @@ import requests
 import config as cfg
 import db
 import media
-from commands import CommandMixin, MAGIC_WEBHOOK_COMMAND_PREFIX
-from delivery import DeliveryMixin, MAX_CONSECUTIVE_SENDS, WINDOW_DEADLINE_SECONDS, PULL_CHUNK_LIMIT  # noqa: F401 — re-export for backward compat
+from commands import MAGIC_WEBHOOK_COMMAND_PREFIX, CommandMixin
+from delivery import (  # noqa: F401 — re-export for backward compat
+    MAX_CONSECUTIVE_SENDS,
+    PULL_CHUNK_LIMIT,
+    WINDOW_DEADLINE_SECONDS,
+    DeliveryMixin,
+)
 from ilink import ILinkClient
 from keepalive import KeepaliveMixin
 
@@ -76,7 +81,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
     def _load_contacts(self):
         if os.path.exists(self._contacts_file):
             try:
-                with open(self._contacts_file, "r", encoding="utf-8") as fh:
+                with open(self._contacts_file, encoding="utf-8") as fh:
                     self.contacts = json.load(fh)
                 logger.info("已加载 %d 个联系人缓存", len(self.contacts))
             except Exception as exc:
@@ -85,7 +90,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         ctx_file = os.path.join(self._data_dir, "context_tokens.json")
         if os.path.exists(ctx_file):
             try:
-                with open(ctx_file, "r", encoding="utf-8") as fh:
+                with open(ctx_file, encoding="utf-8") as fh:
                     self.context_tokens = json.load(fh)
             except Exception:
                 pass
@@ -93,7 +98,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         act_file = os.path.join(self._data_dir, "activity.json")
         if os.path.exists(act_file):
             try:
-                with open(act_file, "r", encoding="utf-8") as fh:
+                with open(act_file, encoding="utf-8") as fh:
                     self.activity_tracker = json.load(fh)
             except Exception:
                 pass
@@ -325,6 +330,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         if text.startswith("/"):
             cmd_reply = self._handle_command(text, from_user)
             if cmd_reply == "__MAGIC_PULL__":
+
                 def _async_pull_worker():
                     result = self.pull_pending_messages(from_user)
                     if result.get("empty"):
@@ -336,7 +342,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 return
 
             if cmd_reply.startswith("__MAGIC_RETRY__:"):
-                retry_text = cmd_reply[len("__MAGIC_RETRY__:"):]
+                retry_text = cmd_reply[len("__MAGIC_RETRY__:") :]
 
                 def _async_retry_worker():
                     try:
@@ -353,6 +359,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 return
 
             if cmd_reply.startswith(MAGIC_WEBHOOK_COMMAND_PREFIX):
+
                 def _async_command_webhook_worker():
                     self._trigger_webhook(from_user, from_name, text, msg, is_command=True)
 
@@ -367,6 +374,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self._trigger_webhook(from_user, from_name, text, msg)
 
         if self.ai_manager and text and not text.startswith("/"):
+
             def _async_ai_worker(uid, msg_text):
                 try:
                     ai_reply = self.ai_manager.chat(uid, msg_text)

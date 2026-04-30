@@ -1,6 +1,6 @@
-import os
 import json
 import logging
+import os
 import threading
 
 logger = logging.getLogger(__name__)
@@ -71,11 +71,15 @@ def load_config() -> dict:
     config = DEFAULT_CONFIG.copy()
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r") as f:
+            with open(CONFIG_FILE) as f:
                 saved = json.load(f)
             config.update(saved)
-            logger.info("已加载 AI 配置: provider=%s, model=%s, enabled=%s",
-                        config["provider"], config["model"], config["enabled"])
+            logger.info(
+                "已加载 AI 配置: provider=%s, model=%s, enabled=%s",
+                config["provider"],
+                config["model"],
+                config["enabled"],
+            )
         except Exception as e:
             logger.warning("读取 AI 配置失败: %s", e)
 
@@ -110,7 +114,7 @@ def load_config() -> dict:
         config["webhook_timeout"] = max(1, min(30, int(config.get("webhook_timeout", 5))))
     except (TypeError, ValueError):
         config["webhook_timeout"] = 5
-        
+
     # 向后兼容：将旧的双布尔迁移为新字段，如有旧字段则自动升级保存一次
     needs_save = False
     if "keepalive_23h" in config or "keepalive_23h58m" in config:
@@ -122,11 +126,11 @@ def load_config() -> dict:
         config.pop("keepalive_23h", None)
         config.pop("keepalive_23h58m", None)
         needs_save = True
-        
+
     if "keepalive_remind_minutes" not in config:
         config["keepalive_remind_minutes"] = 1380
         needs_save = True
-        
+
     if needs_save:
         save_config(config)
 

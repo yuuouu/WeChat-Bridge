@@ -1,9 +1,11 @@
 """已登录页面。"""
 
 from webapp.ui.layout import HTML_TEMPLATE
+
+
 def render_logged_in():
     """已登录聊天界面"""
-    content = f"""
+    content = """
   <div class="card logged-in">
     <div class="header">
       <div style="display:flex; align-items:center;">
@@ -57,7 +59,7 @@ def render_logged_in():
         <div class="delivery-state-pill" id="currentDeliveryBadge">等待联系人</div>
       </div>
     </div>
-    
+
     <div class="chat-container">
       <div class="chat-messages" id="msgs">
         <!-- 动态加载消息 -->
@@ -66,10 +68,10 @@ def render_logged_in():
       <div class="chat-input-area">
         <input type="text" id="contact" class="contact-select" list="contact_list" placeholder="发送给谁...">
         <datalist id="contact_list"></datalist>
-        
+
         <label for="imgUpload" class="img-upload-btn" title="发送图片">🖼️</label>
         <input type="file" id="imgUpload" accept="image/*" style="display: none;">
-        
+
         <input type="text" id="ipt" class="chat-input" placeholder="输入消息内容，回车发送..." autocomplete="off">
         <button id="sendBtn" class="send-btn">发送</button>
       </div>
@@ -85,7 +87,7 @@ def render_logged_in():
 <div class="modal-overlay" id="aiModal">
   <div class="modal">
     <h2>⚙️ 系统设置</h2>
-    
+
     <h3 style="margin-bottom: 15px; margin-top:10px; font-size:15px; color:#ddd;">🔗 连接保活提醒 (24h限制)</h3>
     <div class="form-group">
       <label class="form-label">用户最后一条消息后，超过以下时间发送保活提醒</label>
@@ -111,9 +113,9 @@ def render_logged_in():
       </div>
       <div style="color:#888; font-size:12px; margin-top:6px;">开启后，保持网页打开即可在收到新消息时收到系统屏幕通知</div>
     </div>
-    
+
     <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
-    
+
     <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">🤖 智能回复助手</h3>
     <div class="form-group">
       <div class="toggle-switch" onclick="toggleAI()">
@@ -121,7 +123,7 @@ def render_logged_in():
         <span id="aiToggleLabel">AI 已关闭</span>
       </div>
     </div>
-    
+
     <div id="aiSettingsGroup" style="display: none;">
       <div class="form-group">
         <label class="form-label">AI 厂商</label>
@@ -326,7 +328,7 @@ def render_logged_in():
       try {
         const res = await fetch('/api/ai_config');
         const cfg = await res.json();
-        
+
         aiEnabled = cfg.enabled || false;
         document.getElementById('aiToggle').classList.toggle('on', aiEnabled);
         document.getElementById('aiToggleLabel').textContent = aiEnabled ? 'AI 已启用' : 'AI 已关闭';
@@ -336,7 +338,7 @@ def render_logged_in():
         document.getElementById('webhookToggle').classList.toggle('on', webhookEnabled);
         document.getElementById('webhookToggleLabel').textContent = webhookEnabled ? 'Webhook 已启用' : 'Webhook 已关闭';
         document.getElementById('webhookSettingsGroup').style.display = webhookEnabled ? 'block' : 'none';
-        
+
         setKAFromMinutes(cfg.keepalive_remind_minutes || 0);
 
         document.getElementById('aiProvider').value = cfg.provider || 'openai';
@@ -349,7 +351,7 @@ def render_logged_in():
         document.getElementById('webhookUrl').value = cfg.webhook_url || '';
         document.getElementById('webhookMode').value = cfg.webhook_mode || 'unknown_command';
         document.getElementById('webhookTimeout').value = cfg.webhook_timeout || 5;
-        
+
         renderNotifyToggle();
       } catch(e) {}
       document.getElementById('aiModal').classList.add('active');
@@ -437,7 +439,7 @@ def render_logged_in():
     const textIpt = document.getElementById('ipt');
     const sendBtn = document.getElementById('sendBtn');
     const connBadge = document.getElementById('connBadge');
-    
+
     let knownMsgIds = new Set();
     let isScrolledToBottom = true;
     let initialLoad = true;
@@ -451,7 +453,7 @@ def render_logged_in():
       buffering_users: 0,
     };
     const deliveryPanel = document.getElementById('deliveryPanel');
-    
+
     msgsEl.addEventListener('scroll', () => {
       isScrolledToBottom = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 50;
     });
@@ -545,20 +547,20 @@ def render_logged_in():
         const res = await fetch('/api/messages?_t=' + Date.now());
         const data = await res.json();
         let appended = false;
-        
+
         data.messages.forEach(m => {
           if (!knownMsgIds.has(m.msg_id)) {
             if(initialLoad && knownMsgIds.size === 0) msgsEl.innerHTML = ''; // 清除 loading 提示
             knownMsgIds.add(m.msg_id);
             const isSend = m.type === 'send';
             const date = formatMessageTime(m.time);
-            
+
             // 系统级别通知（仅对方发来且网页开启通知且不是首次加载的历史消息时）
             let isNotifyOn = localStorage.getItem('notifyEnabled') === 'true';
             if (!initialLoad && !isSend && isNotifyOn && Notification.permission === 'granted') {
                 let notifyText = m.text;
                 if (m.media) {
-                    if (/\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media)) notifyText = "[视频]";
+                    if (/\\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media)) notifyText = "[视频]";
                     else notifyText = "[图片]";
                 }
                 new Notification('WeChat Bridge - ' + m.contact, { body: notifyText, icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" });
@@ -566,7 +568,7 @@ def render_logged_in():
 
             const div = document.createElement('div');
             div.className = `msg ${m.type}`;
-            
+
             // 渲染消息内容（支持图片/视频内联显示）
             let bubbleContent = m.text.replace(/</g, "&lt;");
             const tags = [];
@@ -578,24 +580,24 @@ def render_logged_in():
             if (m.meta && m.meta.blocked_reason === 'window_24h') tags.push('<span class="msg-tag warning">24h失效</span>');
             if (m.meta && m.meta.blocked_reason === 'quota_10') tags.push('<span class="msg-tag warning">10条限制</span>');
             if (m.meta && m.meta.blocked_reason === 'api_limit') tags.push('<span class="msg-tag warning">上游限制</span>');
-            
+
             if (m.media) {
               const mediaUrl = '/media/' + encodeURIComponent(m.media);
-              const isVideo = /\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media);
+              const isVideo = /\\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media);
               const scrollJs = "document.getElementById('msgs').scrollTop = document.getElementById('msgs').scrollHeight";
               if (isVideo) {
                 bubbleContent = bubbleContent.replace(
-                  /\[视频:[^\]]*\]/g,
+                  /\\[视频:[^\\]]*\\]/g,
                   `<video class="chat-video" src="${mediaUrl}" controls preload="metadata" playsinline onloadedmetadata="${scrollJs}"></video>`
                 );
               } else {
                 bubbleContent = bubbleContent.replace(
-                  /\[图片:[^\]]*\]/g, 
+                  /\\[图片:[^\\]]*\\]/g,
                   `<img class="chat-img" src="${mediaUrl}" alt="图片" onclick="openLightbox('${mediaUrl}')" loading="lazy" onload="${scrollJs}">`
                 );
               }
             }
-            
+
             div.innerHTML = `
               <div class="msg-meta">
                 <span>${isSend ? '我 ➞ ' + m.contact : m.contact}</span>
@@ -666,14 +668,14 @@ def render_logged_in():
       textIpt.value = '';
       flushSendQueue();
     }
-    
+
     let lastTypingTime = 0;
     async function sendTypingStatus() {
       const to = contactIpt.value.trim();
       const text = textIpt.value.trim();
       // 仅当输入框有内容、有焦点、并且距上次发送满 5 秒时才发送
       if (!to || !text || Date.now() - lastTypingTime < 5000) return;
-      
+
       lastTypingTime = Date.now();
       try {
         await fetch('/api/typing', {
@@ -688,7 +690,7 @@ def render_logged_in():
     imgUpload.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      
+
       const to = contactIpt.value.trim();
       // 这里不强制要求 to 存在，如果是单联系人后端可以兜底，但前端提示一下更好
       if (!to) {
@@ -696,20 +698,20 @@ def render_logged_in():
         imgUpload.value = ''; // 清除选择，以便可重复选同一张图
         return;
       }
-      
+
       const formData = new FormData();
       formData.append('to', to);
       formData.append('image', file);
-      
+
       // 显示上传中的状态，用 toast
       showToast('图片上传发送中...');
-      
+
       try {
         const res = await fetch('/api/send_image', {
           method: 'POST',
           body: formData
         });
-        
+
         const data = await res.json();
         if (res.ok) {
           if (data.buffered) {
@@ -730,14 +732,14 @@ def render_logged_in():
 
     sendBtn.addEventListener('click', sendMsg);
     contactIpt.addEventListener('input', renderDeliveryStatus);
-    
+
     textIpt.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
         sendMsg();
       }
     });
-    
+
     // 监听输入和焦点变化，触发正在输入状态
     textIpt.addEventListener('input', sendTypingStatus);
     textIpt.addEventListener('focus', sendTypingStatus);
@@ -797,4 +799,3 @@ def render_logged_in():
     });
 """
     return HTML_TEMPLATE % (content, js)
-

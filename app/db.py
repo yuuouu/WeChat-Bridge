@@ -61,10 +61,7 @@ def close_db():
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column_name: str, definition: str):
-    columns = {
-        row["name"]
-        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    }
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column_name not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
         logger.info("已为 %s 表添加列: %s", table, column_name)
@@ -241,9 +238,7 @@ def init_db(db_file: str = None):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(time DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(overflow_session_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_pending ON messages(pending_message_id)")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_overflow_sessions_user ON overflow_sessions(user_id, status)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_overflow_sessions_user ON overflow_sessions(user_id, status)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_id, status, created_at)"
         )
@@ -424,9 +419,7 @@ def list_delivery_states() -> list[dict]:
 def get_global_delivery_stats() -> dict:
     with _lock:
         conn = _get_conn()
-        pending_total = conn.execute(
-            "SELECT COUNT(*) FROM pending_messages WHERE status = 'PENDING'"
-        ).fetchone()[0]
+        pending_total = conn.execute("SELECT COUNT(*) FROM pending_messages WHERE status = 'PENDING'").fetchone()[0]
         active_sessions = conn.execute(
             "SELECT COUNT(*) FROM overflow_sessions WHERE status IN ('OPEN', 'READY_PULL')"
         ).fetchone()[0]

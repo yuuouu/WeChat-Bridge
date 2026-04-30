@@ -1,4 +1,5 @@
 """Web UI 公共布局模板。"""
+
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -21,7 +22,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
-  
+
   .card {
     background: linear-gradient(135deg, #1a1a2e 0%%, #16213e 100%%);
     border: 1px solid rgba(255,255,255,0.08);
@@ -55,7 +56,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .header h1 { font-size: 20px; margin-bottom: 0;}
   .subtitle { color: #888; font-size: 14px; margin-bottom: 32px; }
   .header .subtitle { display: none; }
-  
+
   .qr-container {
     background: white;
     border-radius: 16px;
@@ -197,7 +198,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     border-radius: 8px;
     box-shadow: 0 0 40px rgba(0,0,0,0.5);
   }
-  
+
   .chat-input-area {
     padding: 16px;
     background: rgba(20,20,35,0.9);
@@ -427,7 +428,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .btn-cancel { background: #333; color: #ccc; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
   .btn-save { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-weight: 500; }
   .btn-save:hover { opacity: 0.9; }
-  
+
   .toast-container {
     position: fixed; top: 20px; left: 50%%; transform: translateX(-50%%);
     z-index: 9999; display: flex; flex-direction: column; gap: 10px;
@@ -442,7 +443,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .toast.error { border-left: 4px solid #ef4444; }
   @keyframes slideDown { from{transform:translateY(-20px);opacity:0} to{transform:translateY(0);opacity:1} }
   @keyframes fadeOut { from{opacity:1} to{opacity:0; visibility:hidden} }
-  
+
   .dialog-overlay {
     position: fixed; top: 0; left: 0; width: 100%%; height: 100%%; z-index: 10000;
     background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
@@ -471,7 +472,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     font-size: 14px; font-weight: 500; float: right;
   }
   .dialog-btn:hover { opacity: 0.9; }
-  
+
   .img-upload-btn {
     background: #1e1e2d;
     border: 1px solid rgba(255,255,255,0.1);
@@ -496,5 +497,3 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </script>
 </body>
 </html>"""
-
-

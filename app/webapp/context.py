@@ -1,5 +1,5 @@
-from dataclasses import dataclass, field
 import secrets
+from dataclasses import dataclass, field
 
 from bridge import WeChatBridge
 from ilink import ILinkClient
@@ -22,4 +22,3 @@ class WebAppContext:
     api_token: str = ""
     session_secret: str = field(default_factory=lambda: secrets.token_hex(16))
     qr_cache: QRCacheState = field(default_factory=QRCacheState)
-

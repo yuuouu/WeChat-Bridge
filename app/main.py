@@ -4,10 +4,10 @@ WeChat Bridge 入口
 启动 HTTP API 服务 + 消息长轮询循环
 """
 
-import os
-import sys
-import signal
 import logging
+import os
+import signal
+import sys
 
 # 配置日志
 log_format = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
@@ -29,7 +29,8 @@ _log_dir = os.environ.get("LOG_DIR", os.path.join(_project_root, "data"))
 os.makedirs(_log_dir, exist_ok=True)
 _log_file = os.path.join(_log_dir, "run.log")
 from logging.handlers import RotatingFileHandler
-_file_handler = RotatingFileHandler(_log_file, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+
+_file_handler = RotatingFileHandler(_log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
 _file_handler.setFormatter(logging.Formatter(log_format, datefmt=log_datefmt))
 logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger("wechat-bridge")
@@ -37,10 +38,10 @@ logger = logging.getLogger("wechat-bridge")
 # 确保能 import 同目录模块
 sys.path.insert(0, os.path.join(_project_root, "app"))
 
-from ilink import ILinkClient
-from bridge import WeChatBridge
 import config as cfg
 import web
+from bridge import WeChatBridge
+from ilink import ILinkClient
 from version import __version__
 
 
@@ -75,21 +76,28 @@ def main():
     # ==== 检测更新 ====
     def check_for_updates():
         try:
-            import urllib.request
             import json
             import subprocess
-            
+            import urllib.request
+
             # 尝试获取本地 Git Commit
             try:
-                local_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], stderr=subprocess.STDOUT, cwd=_project_root).decode('utf-8').strip()
+                local_commit = (
+                    subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.STDOUT, cwd=_project_root)
+                    .decode("utf-8")
+                    .strip()
+                )
             except Exception:
                 local_commit = None
 
-            req = urllib.request.Request("https://api.github.com/repos/yuuouu/WeChat-Bridge/commits/main", headers={'User-Agent': 'WeChat-Bridge-Updater'})
+            req = urllib.request.Request(
+                "https://api.github.com/repos/yuuouu/WeChat-Bridge/commits/main",
+                headers={"User-Agent": "WeChat-Bridge-Updater"},
+            )
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode())
                 remote_commit = data.get("sha")
-                
+
                 if local_commit and remote_commit:
                     if local_commit != remote_commit:
                         logger.warning("🎉 【发现新版本】当前运行的版本较旧！")
@@ -105,12 +113,13 @@ def main():
             logger.debug("检测更新失败: %s", e)
 
     import threading
-    threading.Thread(target=check_for_updates, daemon=True).start()
 
+    threading.Thread(target=check_for_updates, daemon=True).start()
 
     # ==== 新增：注入 AI 模块 ====
     try:
         from ai_chat import AIChatManager
+
         ai_manager = AIChatManager(cfg.load_config, cfg.save_config)
         wechat_bridge.ai_manager = ai_manager
         logger.info("✅ AI 模块已挂载")
@@ -138,9 +147,11 @@ def main():
     if auto_open:
         import threading
         import webbrowser
+
         def _open_browser():
             logger.info("🌐 正在打开浏览器: %s", url)
             webbrowser.open(url)
+
         threading.Timer(1.5, _open_browser).start()
 
     logger.info("✅ 服务已就绪: %s", url)

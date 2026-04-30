@@ -14,7 +14,7 @@ def parse_multipart(body: bytes, content_type: str, logger=None) -> tuple[str, b
         for part in content_type.split(";"):
             part = part.strip()
             if part.startswith("boundary="):
-                boundary = part[len("boundary="):]
+                boundary = part[len("boundary=") :]
                 break
 
         if not boundary:
@@ -46,4 +46,3 @@ def parse_multipart(body: bytes, content_type: str, logger=None) -> tuple[str, b
             logger.warning("解析 multipart 失败: %s", exc)
 
     return to, image_data
-

@@ -5,13 +5,13 @@
 - 支持图片/文件/视频/语音（当前仅实现图片）
 """
 
-import os
 import base64
 import hashlib
 import logging
+import os
 import time
-import requests
 
+import requests
 from Crypto.Cipher import AES
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def _unpad_pkcs7(data: bytes) -> bytes:
 def decrypt_aes_ecb(ciphertext: bytes, aes_key: bytes) -> bytes:
     """
     AES-128-ECB 解密 + PKCS7 去填充
-    
+
     参数:
         ciphertext: 加密的二进制数据
         aes_key: 16 字节 AES 密钥（原始字节）
@@ -88,12 +88,12 @@ def encrypt_aes_ecb(plaintext: bytes, aes_key: bytes) -> bytes:
 def _decode_aes_key(aes_key_b64: str, media_type: str = "image") -> bytes:
     """
     解码 aes_key（base64 编码）
-    
+
     - 图片: base64(raw 16 bytes) → 直接 base64 解码得到 16 字节密钥
     - 文件/语音/视频: base64(hex string of 16 bytes) → 先 base64 解码得到 hex 字符串，再 bytes.fromhex
     """
     raw = base64.b64decode(aes_key_b64)
-    
+
     if media_type == "image":
         # 图片：raw 就是 16 字节密钥
         if len(raw) == 16:
@@ -159,8 +159,9 @@ def download_and_decrypt_media(
         resp = requests.get(cdn_url, timeout=timeout, stream=True)
         resp.raise_for_status()
         encrypted_data = resp.content
-        logger.info("CDN %s 下载完成: %d bytes (%.1f MB)",
-                     media_type, len(encrypted_data), len(encrypted_data) / 1048576)
+        logger.info(
+            "CDN %s 下载完成: %d bytes (%.1f MB)", media_type, len(encrypted_data), len(encrypted_data) / 1048576
+        )
 
         if len(encrypted_data) < 16:
             logger.error("CDN 返回数据过短: %d bytes，可能是错误响应", len(encrypted_data))
@@ -171,8 +172,7 @@ def download_and_decrypt_media(
 
         # AES-128-ECB 解密
         decrypted = decrypt_aes_ecb(encrypted_data, aes_key)
-        logger.info("%s 解密成功: %d bytes (%.1f MB)",
-                     media_type, len(decrypted), len(decrypted) / 1048576)
+        logger.info("%s 解密成功: %d bytes (%.1f MB)", media_type, len(decrypted), len(decrypted) / 1048576)
 
         # 检测格式
         ext = _detect_media_format(decrypted, media_type)
@@ -202,15 +202,15 @@ def download_and_decrypt_media(
 
 def _detect_image_format(data: bytes) -> str:
     """通过文件头魔数检测图片格式"""
-    if data[:8] == b'\x89PNG\r\n\x1a\n':
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
         return "png"
-    elif data[:3] == b'\xff\xd8\xff':
+    elif data[:3] == b"\xff\xd8\xff":
         return "jpg"
-    elif data[:4] == b'GIF8':
+    elif data[:4] == b"GIF8":
         return "gif"
-    elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
-    elif data[:4] == b'\x00\x00\x00\x1c' or data[:4] == b'\x00\x00\x00\x18':
+    elif data[:4] == b"\x00\x00\x00\x1c" or data[:4] == b"\x00\x00\x00\x18":
         return "heic"
     else:
         # 默认按 jpg 处理（微信最常见格式）
@@ -226,40 +226,40 @@ def _detect_media_format(data: bytes, media_type: str = "video") -> str:
 
     # 非图片类型也先检测是否为图片（兜底）
     img_check = data[:8]
-    if img_check[:8] == b'\x89PNG\r\n\x1a\n':
+    if img_check[:8] == b"\x89PNG\r\n\x1a\n":
         return "png"
-    if img_check[:3] == b'\xff\xd8\xff':
+    if img_check[:3] == b"\xff\xd8\xff":
         return "jpg"
-    if img_check[:4] == b'GIF8':
+    if img_check[:4] == b"GIF8":
         return "gif"
-    if img_check[:4] == b'RIFF' and data[8:12] == b'WEBP':
+    if img_check[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
 
     # 视频格式
-    if data[4:8] == b'ftyp':  # MP4/MOV/3GP 容器
+    if data[4:8] == b"ftyp":  # MP4/MOV/3GP 容器
         sub = data[8:12]
-        if sub in (b'isom', b'iso2', b'mp41', b'mp42', b'avc1', b'M4V '):
+        if sub in (b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"M4V "):
             return "mp4"
-        elif sub in (b'qt  ', b'M4VH', b'M4VP'):
+        elif sub in (b"qt  ", b"M4VH", b"M4VP"):
             return "mov"
-        elif sub in (b'3gp4', b'3gp5', b'3ge6', b'3ge7'):
+        elif sub in (b"3gp4", b"3gp5", b"3ge6", b"3ge7"):
             return "3gp"
         return "mp4"  # ftyp 系默认 mp4
-    if data[:4] == b'\x1a\x45\xdf\xa3':  # WebM/MKV (EBML)
+    if data[:4] == b"\x1a\x45\xdf\xa3":  # WebM/MKV (EBML)
         return "webm"
-    if data[:4] == b'RIFF' and data[8:12] == b'AVI ':
+    if data[:4] == b"RIFF" and data[8:12] == b"AVI ":
         return "avi"
-    if data[:3] == b'\x00\x00\x01':  # MPEG-TS / MPEG-PS
+    if data[:3] == b"\x00\x00\x01":  # MPEG-TS / MPEG-PS
         return "ts"
-    if data[:4] == b'FLV\x01':
+    if data[:4] == b"FLV\x01":
         return "flv"
 
     # 音频格式
-    if data[:4] == b'#!AM':  # AMR
+    if data[:4] == b"#!AM":  # AMR
         return "amr"
-    if data[:4] == b'fLaC':  # FLAC
+    if data[:4] == b"fLaC":  # FLAC
         return "flac"
-    if data[:3] == b'ID3' or (data[0:2] == b'\xff\xfb'):  # MP3
+    if data[:3] == b"ID3" or (data[0:2] == b"\xff\xfb"):  # MP3
         return "mp3"
 
     # 默认
@@ -282,7 +282,7 @@ def get_media_path(filename: str) -> str | None:
 def extract_pic_info(image_item: dict) -> dict | None:
     """
     从 image_item 中提取图片下载所需参数
-    
+
     实际 iLink API 返回结构:
     {
         "aeskey": "e54e9a8a...",           # 顶层 hex 格式密钥(无下划线)
@@ -296,7 +296,7 @@ def extract_pic_info(image_item: dict) -> dict | None:
         "thumb_width": 95,
         "hd_size": 462924
     }
-    
+
     返回 {"encrypted_query_param": ..., "aes_key": ..., ...} 或 None
     """
     if not image_item:
@@ -327,6 +327,7 @@ def extract_pic_info(image_item: dict) -> dict | None:
         if hex_key:
             # 将 hex 字符串编码为 base64（与 _decode_aes_key 兼容）
             import base64
+
             aes_key = base64.b64encode(hex_key.encode("ascii")).decode("ascii")
             logger.info("使用顶层 hex aeskey 构造 base64 key")
 
@@ -334,7 +335,8 @@ def extract_pic_info(image_item: dict) -> dict | None:
     if not eqp:
         full_url = media_obj.get("full_url") or image_item.get("full_url") or ""
         if "encrypted_query_param=" in full_url:
-            from urllib.parse import urlparse, parse_qs
+            from urllib.parse import parse_qs, urlparse
+
             parsed = urlparse(full_url)
             qs = parse_qs(parsed.query)
             eqp = qs.get("encrypted_query_param", [""])[0]
@@ -343,10 +345,11 @@ def extract_pic_info(image_item: dict) -> dict | None:
 
     if not eqp or not aes_key:
         logger.warning(
-            "image_item 缺少必要字段: has_eqp=%s, has_aes_key=%s, "
-            "image_keys=%s, media_keys=%s",
-            bool(eqp), bool(aes_key),
-            list(image_item.keys()), list(media_obj.keys())
+            "image_item 缺少必要字段: has_eqp=%s, has_aes_key=%s, image_keys=%s, media_keys=%s",
+            bool(eqp),
+            bool(aes_key),
+            list(image_item.keys()),
+            list(media_obj.keys()),
         )
         return None
 

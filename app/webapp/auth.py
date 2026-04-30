@@ -17,7 +17,6 @@ def check_web_session(handler, api_token: str, session_secret: str) -> bool:
     for part in cookie_header.split(";"):
         part = part.strip()
         if part.startswith("wb_session="):
-            session_val = part[len("wb_session="):]
+            session_val = part[len("wb_session=") :]
             return session_val == make_session_cookie(api_token, session_secret)
     return False
-
