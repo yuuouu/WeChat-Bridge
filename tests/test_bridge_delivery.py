@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import requests
+
 from tests.crypto_stub import install_crypto_stub
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
