@@ -30,7 +30,6 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-
 HOST = os.environ.get("WEBHOOK_LISTEN_HOST", "0.0.0.0")
 PORT = int(os.environ.get("WEBHOOK_LISTEN_PORT", "18080"))
 BRIDGE_BASE_URL = os.environ.get("BRIDGE_BASE_URL", "http://127.0.0.1:5200").rstrip("/")
@@ -72,10 +71,7 @@ def build_reply(payload: dict) -> str:
         return f"Echo from webhook:\n{args or '(empty)'}"
 
     return (
-        f"Webhook 已收到来自 {from_name} 的消息。\n"
-        f"command={command or '(none)'}\n"
-        f"args={args or '(empty)'}\n"
-        f"text={text}"
+        f"Webhook 已收到来自 {from_name} 的消息。\ncommand={command or '(none)'}\nargs={args or '(empty)'}\ntext={text}"
     )
 
 

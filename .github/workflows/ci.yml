@@ -11,12 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
-        with:
-          args: check app/ tests/
-      - uses: astral-sh/ruff-action@v3
-        with:
-          args: format --check app/ tests/
+      - run: pip install ruff
+      - run: ruff check app/ tests/ examples/
+      - run: ruff format --check app/ tests/ examples/
 
   test:
     runs-on: ubuntu-latest
