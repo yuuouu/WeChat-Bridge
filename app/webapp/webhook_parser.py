@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Webhook schema 适配器。"""
 
 import json

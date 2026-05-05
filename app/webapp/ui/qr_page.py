@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """二维码登录页面。"""
 
 import base64

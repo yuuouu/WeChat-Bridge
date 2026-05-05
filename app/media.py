@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 媒体文件处理模块
 - AES-128-ECB 解密（PKCS7 填充）

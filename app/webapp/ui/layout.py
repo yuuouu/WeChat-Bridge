@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Web UI 公共布局模板。"""
 
 HTML_TEMPLATE = """<!DOCTYPE html>

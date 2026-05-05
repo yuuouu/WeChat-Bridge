@@ -172,11 +172,7 @@ def _timeout_scanner():
         time.sleep(60)
         now = time.time()
         with sessions_lock:
-            expired = [
-                uid
-                for uid, s in sessions.items()
-                if now - s.last_activity > SESSION_TIMEOUT
-            ]
+            expired = [uid for uid, s in sessions.items() if now - s.last_activity > SESSION_TIMEOUT]
         for uid in expired:
             _log("session_timeout", user_id=uid)
             end_session(uid, reason="timeout")
@@ -279,9 +275,9 @@ if __name__ == "__main__":
         start_commands=sorted(START_COMMANDS),
     )
     print(
-        f"\n💡 提示：请确保 WeChat Bridge 的 Webhook 模式设为 all_messages\n"
-        f"   否则 session 中的普通文本或图片不会被转发到此服务。\n"
-        f"   在微信里发送 /rj 开始记录，发送 /exit 结束。\n",
+        "\n💡 提示：请确保 WeChat Bridge 的 Webhook 模式设为 all_messages\n"
+        "   否则 session 中的普通文本或图片不会被转发到此服务。\n"
+        "   在微信里发送 /rj 开始记录，发送 /exit 结束。\n",
         flush=True,
     )
     ThreadingHTTPServer((HOST, PORT), WebhookHandler).serve_forever()

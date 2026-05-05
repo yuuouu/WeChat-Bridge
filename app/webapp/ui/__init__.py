@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Web UI 页面模块。"""
 
 from webapp.ui.auth_page import render_auth_page

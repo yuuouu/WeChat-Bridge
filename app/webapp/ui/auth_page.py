@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """认证解锁页面。"""
 
 from webapp.ui.layout import HTML_TEMPLATE

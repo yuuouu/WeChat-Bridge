@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 WeChat Bridge 入口
 启动 HTTP API 服务 + 消息长轮询循环
@@ -129,13 +131,15 @@ def main():
             import platform
             import urllib.request
 
-            payload = json.dumps({
-                "v": __version__,
-                "os": platform.system().lower(),
-                "arch": platform.machine(),
-                "py": f"{sys.version_info.major}.{sys.version_info.minor}",
-                "mode": "docker" if os.path.exists("/.dockerenv") else "native",
-            }).encode()
+            payload = json.dumps(
+                {
+                    "v": __version__,
+                    "os": platform.system().lower(),
+                    "arch": platform.machine(),
+                    "py": f"{sys.version_info.major}.{sys.version_info.minor}",
+                    "mode": "docker" if os.path.exists("/.dockerenv") else "native",
+                }
+            ).encode()
             req = urllib.request.Request(
                 f"{update_base_url}/telemetry",
                 data=payload,

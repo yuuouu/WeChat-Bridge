@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Markdown 文本处理。"""
 
 import re

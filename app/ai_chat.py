@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 AI 对话模块
 - 统一适配 OpenAI / Gemini / DeepSeek / MiniMax 与自定义 OpenAI 兼容 REST API

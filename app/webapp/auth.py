@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Web 鉴权与会话辅助函数。"""
 
 import hashlib

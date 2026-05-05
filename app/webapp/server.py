@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """HTTP server 与路由分发。"""
 
 import json

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """API route handlers。"""
 
 import base64

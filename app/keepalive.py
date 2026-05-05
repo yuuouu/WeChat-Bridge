@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 24h 保活提醒循环
 

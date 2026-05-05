@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 微信指令路由
 

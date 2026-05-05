@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """请求体解析辅助函数。"""
 
 
