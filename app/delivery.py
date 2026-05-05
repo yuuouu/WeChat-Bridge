@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 投递状态机 + overflow session + /pull 补拉逻辑
 

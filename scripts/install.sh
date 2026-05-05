@@ -1,11 +1,14 @@
 #!/bin/bash
 # ============================================================
 #  WeChat Bridge — 一键安装脚本 (macOS / Linux)
-#  用法: curl -fsSL https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/scripts/install.sh | bash
+#  安装: curl -fsSL https://wb.yuuou.qzz.io/install.sh | bash
+#  卸载: bash wechat-bridge/scripts/uninstall.sh
+#  卸载默认保留 data/ 目录，需手动 rm -rf wechat-bridge/data
 # ============================================================
 set -e
 
 REPO="yuuouu/WeChat-Bridge"
+CF_PROXY="https://wb.yuuou.qzz.io"
 INSTALL_DIR="${WECHAT_BRIDGE_DIR:-$(pwd)/wechat-bridge}"
 PORT="${WECHAT_BRIDGE_PORT:-5200}"
 
@@ -45,17 +48,32 @@ fi
 
 info "安装方式: $([[ $MODE == docker ]] && echo 'Docker Compose' || echo '原生 Python')"
 
+# ── 从 CF 代理下载源码 ──
+download_from_proxy() {
+  info "正在通过 CDN 代理下载源码..."
+  mkdir -p "${INSTALL_DIR}"
+  curl -fsSL "${CF_PROXY}/archive/main.tar.gz" | tar xz --strip-components=1 -C "${INSTALL_DIR}"
+}
+
 # ── 克隆/下载代码 ──
 if command -v git &>/dev/null; then
-  info "正在克隆仓库..."
-  git clone --depth 1 "https://github.com/${REPO}.git" "${INSTALL_DIR}" 2>/dev/null || {
+  if [ -d "${INSTALL_DIR}/.git" ]; then
     warn "目录已存在，正在更新..."
-    cd "${INSTALL_DIR}" && git pull --ff-only
-  }
+    cd "${INSTALL_DIR}" && git pull --ff-only || {
+      warn "git pull 失败，回退到 CDN 代理下载..."
+      cd - >/dev/null
+      rm -rf "${INSTALL_DIR}"
+      download_from_proxy
+    }
+  else
+    info "正在克隆仓库..."
+    git clone --depth 1 "https://github.com/${REPO}.git" "${INSTALL_DIR}" 2>/dev/null || {
+      warn "git clone 失败，回退到 CDN 代理下载..."
+      download_from_proxy
+    }
+  fi
 else
-  info "正在下载源码..."
-  mkdir -p "${INSTALL_DIR}"
-  curl -fsSL "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" | tar xz --strip-components=1 -C "${INSTALL_DIR}"
+  download_from_proxy
 fi
 
 cd "${INSTALL_DIR}"

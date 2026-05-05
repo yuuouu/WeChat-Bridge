@@ -1,10 +1,13 @@
 # ============================================================
 #  WeChat Bridge - Windows Installer
-#  Usage: powershell -c "irm https://raw.githubusercontent.com/yuuouu/WeChat-Bridge/main/scripts/install.ps1 | iex"
+#  Install:   powershell -c "irm https://wb.yuuou.qzz.io/install.ps1 | iex"
+#  Uninstall: powershell -ExecutionPolicy Bypass -File wechat-bridge\scripts\uninstall.ps1
+#  卸载默认保留 data\ 目录，需手动 Remove-Item -Recurse -Force wechat-bridge\data
 # ============================================================
 
 $ErrorActionPreference = "Continue"
 $REPO = "yuuouu/WeChat-Bridge"
+$CF_PROXY = "https://wb.yuuou.qzz.io"
 if ($env:WECHAT_BRIDGE_DIR) { $INSTALL_DIR = $env:WECHAT_BRIDGE_DIR } else { $INSTALL_DIR = Join-Path (Get-Location) "wechat-bridge" }
 if ($env:WECHAT_BRIDGE_PORT) { $PORT = $env:WECHAT_BRIDGE_PORT } else { $PORT = "5200" }
 
@@ -57,6 +60,23 @@ Write-Info ("Python: " + $pyVer.Trim())
 # ── 2. Download code ──
 $hasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
 
+function Download-FromProxy {
+    Write-Info "Downloading source via CDN proxy..."
+    $zipUrl = $CF_PROXY + "/archive/main.zip"
+    $zipFile = Join-Path $env:TEMP "wechat-bridge.zip"
+    try {
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+    } catch {
+        Write-Err "Download failed. Check your network connection."
+    }
+    if (Test-Path $INSTALL_DIR) { Remove-Item $INSTALL_DIR -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
+    Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
+    $extracted = Join-Path $env:TEMP "WeChat-Bridge-main"
+    Get-ChildItem -Path $extracted | Copy-Item -Destination $INSTALL_DIR -Recurse -Force
+    Remove-Item $zipFile, $extracted -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 if ($hasGit) {
     $isGitRepo = (Test-Path $INSTALL_DIR) -and (Test-Path (Join-Path $INSTALL_DIR ".git"))
     if ($isGitRepo) {
@@ -70,30 +90,23 @@ if ($hasGit) {
             Write-Info "Code updated"
         }
         else {
-            Write-Warn ("git pull: " + $pullResult.Trim())
+            Write-Warn ("git pull failed, re-downloading...")
+            Pop-Location
+            Download-FromProxy
         }
-        Pop-Location
-    }
-    elseif (Test-Path $INSTALL_DIR) {
-        Write-Warn "Directory exists but not a git repo, re-cloning..."
-        Remove-Item $INSTALL_DIR -Recurse -Force
-        & git clone --depth 1 ("https://github.com/" + $REPO + ".git") $INSTALL_DIR 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        if ((Get-Location).Path -eq $INSTALL_DIR) { Pop-Location }
     }
     else {
         Write-Info "Cloning repository..."
-        & git clone --depth 1 ("https://github.com/" + $REPO + ".git") $INSTALL_DIR 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        $cloneResult = & git clone --depth 1 ("https://github.com/" + $REPO + ".git") $INSTALL_DIR 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "Git clone failed, falling back to CDN proxy..."
+            Download-FromProxy
+        }
     }
 }
 else {
-    Write-Info "Downloading source (no git)..."
-    New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
-    $zipUrl = "https://github.com/" + $REPO + "/archive/refs/heads/main.zip"
-    $zipFile = Join-Path $env:TEMP "wechat-bridge.zip"
-    Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
-    Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
-    $extracted = Join-Path $env:TEMP "WeChat-Bridge-main"
-    Get-ChildItem -Path $extracted | Copy-Item -Destination $INSTALL_DIR -Recurse -Force
-    Remove-Item $zipFile, $extracted -Recurse -Force -ErrorAction SilentlyContinue
+    Download-FromProxy
 }
 
 Write-Info ("Install directory: " + $INSTALL_DIR)

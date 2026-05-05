@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 消息桥接逻辑
 - 收发消息抽象封装

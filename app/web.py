@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """WeChat Bridge Web 兼容入口。"""
 
 import os

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 iLink Bot API 封装
 纯 HTTP/JSON 调用腾讯 iLink 服务，无需 OpenClaw CLI。
