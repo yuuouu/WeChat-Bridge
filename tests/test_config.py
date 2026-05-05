@@ -117,10 +117,18 @@ class WebhookValidationTests(unittest.TestCase):
         self.assertEqual(config["webhook_timeout"], 1)
 
     def test_webhook_url_only_implies_enabled(self):
-        """仅设置 URL 但无 WEBHOOK_ENABLED 环境变量时，应默认开启（向后兼容）。"""
-        cfg.save_config({**cfg.DEFAULT_CONFIG, "webhook_url": "https://example.com/hook"})
+        """旧配置文件仅有 URL 但无 webhook_enabled 字段时，应默认开启（向后兼容）。"""
+        old_config = {k: v for k, v in cfg.DEFAULT_CONFIG.items() if k != "webhook_enabled"}
+        old_config["webhook_url"] = "https://example.com/hook"
+        cfg.save_config(old_config)
         config = cfg.load_config()
         self.assertTrue(config["webhook_enabled"])
+
+    def test_explicit_webhook_disabled_not_overridden(self):
+        """用户明确关闭 webhook 后，即使 URL 非空也不应被覆盖为 True。"""
+        cfg.save_config({**cfg.DEFAULT_CONFIG, "webhook_enabled": False, "webhook_url": "https://example.com/hook"})
+        config = cfg.load_config()
+        self.assertFalse(config["webhook_enabled"])
 
 
 class KeepaliveMigrationTests(unittest.TestCase):

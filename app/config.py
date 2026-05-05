@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
 def load_config() -> dict:
     """加载 AI 配置，优先从文件读取，环境变量可覆盖"""
     config = DEFAULT_CONFIG.copy()
+    saved = {}
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE) as f:
@@ -96,8 +97,8 @@ def load_config() -> dict:
         config["webhook_url"] = os.environ["WEBHOOK_URL"]
     if os.environ.get("WEBHOOK_ENABLED"):
         config["webhook_enabled"] = os.environ["WEBHOOK_ENABLED"].lower() in ("true", "1", "yes")
-    elif config.get("webhook_url"):
-        # 兼容旧配置：仅配置 URL 时默认视为开启
+    elif "webhook_enabled" not in saved and config.get("webhook_url"):
+        # 兼容旧配置：JSON 中无 webhook_enabled 字段但有 URL 时默认开启
         config["webhook_enabled"] = True
     if os.environ.get("WEBHOOK_MODE"):
         config["webhook_mode"] = os.environ["WEBHOOK_MODE"].strip() or "unknown_command"

@@ -61,18 +61,32 @@ def render_logged_in():
     </div>
 
     <div class="chat-container">
+      <div class="search-bar" id="searchBar">
+        <div style="position:relative; flex:1; display:flex; align-items:center;">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="搜索消息..." autocomplete="off">
+        </div>
+        <span class="search-count" id="searchCount"></span>
+        <button class="search-clear" id="searchClear" title="清除搜索">✕</button>
+      </div>
       <div class="chat-messages" id="msgs">
         <!-- 动态加载消息 -->
         <div style="text-align:center; color:#666; font-size:12px; margin-top:20px;">服务启动，等待收发消息...</div>
       </div>
       <div class="chat-input-area">
-        <input type="text" id="contact" class="contact-select" list="contact_list" placeholder="发送给谁...">
-        <datalist id="contact_list"></datalist>
+        <div class="contact-picker-wrap" id="contactPickerWrap">
+          <button class="contact-picker-btn" id="contactPickerBtn" type="button">
+            <span id="contactPickerLabel">选择联系人</span>
+            <span class="cp-arrow">▼</span>
+          </button>
+          <div class="contact-dropdown" id="contactDropdown"></div>
+        </div>
+        <input type="hidden" id="contact" value="">
 
         <label for="imgUpload" class="img-upload-btn" title="发送图片">🖼️</label>
         <input type="file" id="imgUpload" accept="image/*" style="display: none;">
 
-        <input type="text" id="ipt" class="chat-input" placeholder="输入消息内容，回车发送..." autocomplete="off">
+        <textarea id="ipt" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" rows="1" autocomplete="off"></textarea>
         <button id="sendBtn" class="send-btn">发送</button>
       </div>
     </div>
@@ -127,16 +141,18 @@ def render_logged_in():
     <div id="aiSettingsGroup" style="display: none;">
       <div class="form-group">
         <label class="form-label">AI 厂商</label>
-        <select class="form-select" id="aiProvider" onchange="updateModels()">
-          <option value="openai">OpenAI</option>
-          <option value="gemini">Google Gemini</option>
-          <option value="claude">Anthropic Claude</option>
-          <option value="deepseek">DeepSeek</option>
-        </select>
+        <input class="form-input" id="aiProvider" list="aiProviderList" placeholder="选择预设或输入自定义厂商（如 ollama）" autocomplete="off" oninput="updateModels()">
+        <datalist id="aiProviderList">
+          <option value="openai" label="OpenAI">
+          <option value="gemini" label="Google Gemini">
+          <option value="claude" label="Anthropic Claude">
+          <option value="deepseek" label="DeepSeek">
+        </datalist>
       </div>
       <div class="form-group">
         <label class="form-label">模型</label>
-        <select class="form-select" id="aiModel"></select>
+        <input class="form-input" id="aiModel" list="aiModelList" placeholder="选择预设或输入自定义模型名称（如 qwen3:8b）" autocomplete="off">
+        <datalist id="aiModelList"></datalist>
       </div>
       <div class="form-group">
         <label class="form-label">API Key</label>
@@ -271,14 +287,17 @@ def render_logged_in():
     function updateModels() {
       const provider = document.getElementById('aiProvider').value;
       const modelEl = document.getElementById('aiModel');
+      const list = document.getElementById('aiModelList');
       const currentModel = modelEl.value;
-      modelEl.innerHTML = '';
-      (PROVIDER_MODELS[provider] || []).forEach(m => {
+      const presets = PROVIDER_MODELS[provider] || [];
+      list.innerHTML = '';
+      presets.forEach(m => {
         const opt = document.createElement('option');
-        opt.value = m.id; opt.textContent = m.name;
-        modelEl.appendChild(opt);
+        opt.value = m.id; opt.label = m.name;
+        list.appendChild(opt);
       });
-      if ([...modelEl.options].some(o => o.value === currentModel)) modelEl.value = currentModel;
+      // 切换到预设厂商且当前无值时，填入该厂商第一个预设模型
+      if (!currentModel && presets.length) modelEl.value = presets[0].id;
     }
 
     function toggleAI() {
@@ -435,24 +454,260 @@ def render_logged_in():
 
     const msgsEl = document.getElementById('msgs');
     const contactIpt = document.getElementById('contact');
-    const contactList = document.getElementById('contact_list');
     const textIpt = document.getElementById('ipt');
     const sendBtn = document.getElementById('sendBtn');
     const connBadge = document.getElementById('connBadge');
+    const contactPickerBtn = document.getElementById('contactPickerBtn');
+    const contactPickerLabel = document.getElementById('contactPickerLabel');
+    const contactDropdown = document.getElementById('contactDropdown');
+    const searchInput = document.getElementById('searchInput');
+    const searchCount = document.getElementById('searchCount');
+    const searchClear = document.getElementById('searchClear');
 
     let knownMsgIds = new Set();
+    let allMessages = [];  // sorted by time asc
     let isScrolledToBottom = true;
     let initialLoad = true;
     let contactMap = {};
     let deliveryStateMap = {};
     let sendQueue = [];
     let sendInFlight = false;
+    let oldestLoadedId = null;
+    let historyExhausted = false;
     let latestServiceStatus = {
       pending_total: 0,
       active_sessions: 0,
       buffering_users: 0,
     };
     const deliveryPanel = document.getElementById('deliveryPanel');
+
+    // === Contact Picker ===
+    contactPickerBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = contactDropdown.classList.toggle('open');
+      contactPickerBtn.classList.toggle('open', isOpen);
+    });
+    document.addEventListener('click', (e) => {
+      if (!document.getElementById('contactPickerWrap').contains(e.target)) {
+        contactDropdown.classList.remove('open');
+        contactPickerBtn.classList.remove('open');
+      }
+    });
+    function selectContact(name) {
+      contactIpt.value = name;
+      contactPickerLabel.textContent = name || '选择联系人';
+      contactDropdown.classList.remove('open');
+      contactPickerBtn.classList.remove('open');
+      renderDeliveryStatus();
+      textIpt.focus();
+    }
+    function renderContactPicker() {
+      contactDropdown.innerHTML = '';
+      const entries = Object.entries(contactMap);
+      const currentName = contactIpt.value;
+      entries.forEach(([uid, name]) => {
+        const ds = deliveryStateMap[uid];
+        const status = ds ? ds.status : 'NORMAL';
+        const pending = ds ? (ds.pending_count || 0) : 0;
+        let dotColor = '#07c160'; // green = normal
+        if (['WARNED','BUFFERING'].includes(status)) dotColor = '#fbbf24';
+        else if (status === 'READY_PULL') dotColor = '#818cf8';
+        const item = document.createElement('div');
+        item.className = 'contact-item' + (name === currentName ? ' active' : '');
+        item.innerHTML = `<span class="ci-dot" style="background:${dotColor}"></span><span class="ci-name">${name}</span>${pending > 0 ? `<span class="ci-badge">${pending}条</span>` : ''}`;
+        item.addEventListener('click', () => selectContact(name));
+        contactDropdown.appendChild(item);
+      });
+      // auto-select single contact
+      if (entries.length === 1 && !contactIpt.value) {
+        selectContact(entries[0][1]);
+      }
+    }
+
+    // === Search ===
+    let searchDebounce = null;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(applySearch, 150);
+    });
+    searchClear.addEventListener('click', () => {
+      searchInput.value = '';
+      applySearch();
+      searchInput.focus();
+    });
+    function applySearch() {
+      const q = searchInput.value.trim().toLowerCase();
+      const msgs = msgsEl.querySelectorAll('.msg');
+      let matched = 0;
+      msgs.forEach(el => {
+        const bubble = el.querySelector('.msg-bubble');
+        if (!bubble) { el.classList.remove('search-hidden'); return; }
+        // restore original text (remove old highlights)
+        bubble.querySelectorAll('.search-highlight').forEach(hl => {
+          hl.replaceWith(hl.textContent);
+        });
+        bubble.normalize();
+        if (!q) { el.classList.remove('search-hidden'); return; }
+        const text = bubble.textContent.toLowerCase();
+        if (text.includes(q)) {
+          el.classList.remove('search-hidden');
+          matched++;
+          // highlight matches in text nodes only
+          highlightTextNodes(bubble, q);
+        } else {
+          el.classList.add('search-hidden');
+        }
+      });
+      // also hide/show date separators
+      msgsEl.querySelectorAll('.date-separator').forEach(sep => {
+        sep.classList.toggle('search-hidden', !!q);
+      });
+      searchCount.textContent = q ? `${matched} 条` : '';
+    }
+    function highlightTextNodes(node, query) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const idx = node.textContent.toLowerCase().indexOf(query);
+        if (idx === -1) return;
+        const before = node.textContent.slice(0, idx);
+        const match = node.textContent.slice(idx, idx + query.length);
+        const after = node.textContent.slice(idx + query.length);
+        const frag = document.createDocumentFragment();
+        if (before) frag.appendChild(document.createTextNode(before));
+        const mark = document.createElement('span');
+        mark.className = 'search-highlight';
+        mark.textContent = match;
+        frag.appendChild(mark);
+        if (after) {
+          const afterNode = document.createTextNode(after);
+          frag.appendChild(afterNode);
+        }
+        node.parentNode.replaceChild(frag, node);
+      } else if (node.nodeType === Node.ELEMENT_NODE && !node.classList.contains('search-highlight') && !['IMG','VIDEO','SVG'].includes(node.tagName)) {
+        Array.from(node.childNodes).forEach(child => highlightTextNodes(child, query));
+      }
+    }
+
+    // === Textarea auto-resize ===
+    textIpt.addEventListener('input', () => {
+      textIpt.style.height = 'auto';
+      textIpt.style.height = Math.min(textIpt.scrollHeight, 120) + 'px';
+    });
+
+    // === Date separator helper ===
+    function getDateLabel(tsSeconds) {
+      const dt = new Date(tsSeconds * 1000);
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const dtStr = `${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}`;
+      const todayStr = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
+      const yestStr = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+      if (dtStr === todayStr) return '今天';
+      if (dtStr === yestStr) return '昨天';
+      return `${dt.getMonth()+1}月${dt.getDate()}日`;
+    }
+    function insertDateSeparator(label) {
+      const sep = document.createElement('div');
+      sep.className = 'date-separator';
+      sep.innerHTML = `<span>${label}</span>`;
+      msgsEl.appendChild(sep);
+    }
+
+    // === Render a single message element ===
+    function renderMessageEl(m) {
+      const isSend = m.type === 'send';
+      const date = formatMessageTime(m.time);
+      const div = document.createElement('div');
+      div.className = `msg ${m.type}`;
+      let bubbleContent = m.text.replace(/</g, '&lt;');
+      const tags = [];
+      if (m.delivery_stage === 'buffered') tags.push('<span class="msg-tag buffered">已缓存</span>');
+      if (m.delivery_stage === 'pulled') tags.push('<span class="msg-tag pulled">已补拉</span>');
+      if (m.delivery_stage === 'discarded') tags.push('<span class="msg-tag discarded">已丢弃</span>');
+      if (m.delivery_stage === 'uncertain') tags.push('<span class="msg-tag uncertain">可能已送达</span>');
+      if (m.meta && m.meta.limit_warning) tags.push('<span class="msg-tag warning">系统提醒</span>');
+      if (m.meta && m.meta.blocked_reason === 'window_24h') tags.push('<span class="msg-tag warning">24h失效</span>');
+      if (m.meta && m.meta.blocked_reason === 'quota_10') tags.push('<span class="msg-tag warning">10条限制</span>');
+      if (m.meta && m.meta.blocked_reason === 'api_limit') tags.push('<span class="msg-tag warning">上游限制</span>');
+      if (m.media) {
+        const mediaUrl = '/media/' + encodeURIComponent(m.media);
+        const isVideo = /\\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media);
+        if (isVideo) {
+          bubbleContent = bubbleContent.replace(
+            /\\[视频:[^\\]]*\\]/g,
+            `<video class="chat-video" src="${mediaUrl}" controls preload="metadata" playsinline></video>`
+          );
+        } else {
+          bubbleContent = bubbleContent.replace(
+            /\\[图片:[^\\]]*\\]/g,
+            `<img class="chat-img" src="${mediaUrl}" alt="图片" onclick="openLightbox('${mediaUrl}')" loading="lazy">`
+          );
+        }
+      }
+      div.innerHTML = `
+        <div class="msg-meta">
+          <span>${isSend ? '我 ➞ ' + m.contact : m.contact}</span>
+          <span>${date}</span>
+        </div>
+        ${tags.length ? `<div class="msg-tags">${tags.join('')}</div>` : ''}
+        <div class="msg-bubble">${bubbleContent}</div>
+      `;
+      return div;
+    }
+
+    // === Full re-render all messages ===
+    function renderAllMessages() {
+      msgsEl.innerHTML = '';
+      // Load-more button
+      const loadWrap = document.createElement('div');
+      loadWrap.className = 'load-more-wrap';
+      const btnText = historyExhausted ? '已加载全部历史' : '⬆ 加载更多历史';
+      loadWrap.innerHTML = `<button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreHistory()" ${historyExhausted ? 'disabled' : ''}>${btnText}</button>`;
+      msgsEl.appendChild(loadWrap);
+      // Render messages with date separators
+      let prevDateLabel = '';
+      allMessages.forEach(m => {
+        const dateLabel = getDateLabel(m.time);
+        if (dateLabel !== prevDateLabel) {
+          const sep = document.createElement('div');
+          sep.className = 'date-separator';
+          sep.innerHTML = `<span>${dateLabel}</span>`;
+          msgsEl.appendChild(sep);
+          prevDateLabel = dateLabel;
+        }
+        msgsEl.appendChild(renderMessageEl(m));
+      });
+    }
+
+    // === Load More History ===
+    async function loadMoreHistory() {
+      if (!oldestLoadedId || historyExhausted) return;
+      const btn = document.getElementById('loadMoreBtn');
+      if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
+      try {
+        const res = await fetch(`/api/messages?before_id=${oldestLoadedId}&limit=200&_t=` + Date.now());
+        const data = await res.json();
+        const older = data.messages.filter(m => !knownMsgIds.has(m.msg_id));
+        if (older.length === 0) {
+          historyExhausted = true;
+          if (btn) { btn.textContent = '已加载全部历史'; btn.disabled = true; }
+          return;
+        }
+        // Merge into allMessages (prepend older, keep sorted by time)
+        older.forEach(m => { knownMsgIds.add(m.msg_id); });
+        allMessages = [...older, ...allMessages];
+        oldestLoadedId = Math.min(oldestLoadedId, ...older.map(m => m.id));
+        // Full re-render
+        const prevScrollH = msgsEl.scrollHeight;
+        renderAllMessages();
+        // Maintain scroll position (offset by new content height)
+        msgsEl.scrollTop = msgsEl.scrollHeight - prevScrollH;
+        // Re-apply search if active
+        if (searchInput.value.trim()) applySearch();
+      } catch(e) {
+        if (btn) { btn.disabled = false; btn.textContent = '加载失败，点击重试'; }
+      }
+    }
 
     msgsEl.addEventListener('scroll', () => {
       isScrolledToBottom = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 50;
@@ -527,17 +782,7 @@ def render_logged_in():
         const data = await res.json();
         contactMap = data.contacts || {};
         deliveryStateMap = data.delivery_states || {};
-        contactList.innerHTML = '';
-        const entries = Object.entries(contactMap);
-        for (let [uid, name] of entries) {
-          const opt = document.createElement('option');
-          opt.value = name;
-          contactList.appendChild(opt);
-        }
-        // 如果联系人有且仅有一个，且输入框为空，则默认选中它
-        if (entries.length === 1 && !contactIpt.value) {
-          contactIpt.value = entries[0][1];
-        }
+        renderContactPicker();
         renderDeliveryStatus();
       } catch (e) {}
     }
@@ -550,12 +795,12 @@ def render_logged_in():
 
         data.messages.forEach(m => {
           if (!knownMsgIds.has(m.msg_id)) {
-            if(initialLoad && knownMsgIds.size === 0) msgsEl.innerHTML = ''; // 清除 loading 提示
+            if(initialLoad && knownMsgIds.size === 0) msgsEl.innerHTML = '';
             knownMsgIds.add(m.msg_id);
+            allMessages.push(m);
             const isSend = m.type === 'send';
-            const date = formatMessageTime(m.time);
 
-            // 系统级别通知（仅对方发来且网页开启通知且不是首次加载的历史消息时）
+            // 系统级别通知
             let isNotifyOn = localStorage.getItem('notifyEnabled') === 'true';
             if (!initialLoad && !isSend && isNotifyOn && Notification.permission === 'granted') {
                 let notifyText = m.text;
@@ -566,51 +811,28 @@ def render_logged_in():
                 new Notification('WeChat Bridge - ' + m.contact, { body: notifyText, icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" });
             }
 
-            const div = document.createElement('div');
-            div.className = `msg ${m.type}`;
-
-            // 渲染消息内容（支持图片/视频内联显示）
-            let bubbleContent = m.text.replace(/</g, "&lt;");
-            const tags = [];
-            if (m.delivery_stage === 'buffered') tags.push('<span class="msg-tag buffered">已缓存</span>');
-            if (m.delivery_stage === 'pulled') tags.push('<span class="msg-tag pulled">已补拉</span>');
-            if (m.delivery_stage === 'discarded') tags.push('<span class="msg-tag discarded">已丢弃</span>');
-            if (m.delivery_stage === 'uncertain') tags.push('<span class="msg-tag uncertain">可能已送达</span>');
-            if (m.meta && m.meta.limit_warning) tags.push('<span class="msg-tag warning">系统提醒</span>');
-            if (m.meta && m.meta.blocked_reason === 'window_24h') tags.push('<span class="msg-tag warning">24h失效</span>');
-            if (m.meta && m.meta.blocked_reason === 'quota_10') tags.push('<span class="msg-tag warning">10条限制</span>');
-            if (m.meta && m.meta.blocked_reason === 'api_limit') tags.push('<span class="msg-tag warning">上游限制</span>');
-
-            if (m.media) {
-              const mediaUrl = '/media/' + encodeURIComponent(m.media);
-              const isVideo = /\\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media);
-              const scrollJs = "document.getElementById('msgs').scrollTop = document.getElementById('msgs').scrollHeight";
-              if (isVideo) {
-                bubbleContent = bubbleContent.replace(
-                  /\\[视频:[^\\]]*\\]/g,
-                  `<video class="chat-video" src="${mediaUrl}" controls preload="metadata" playsinline onloadedmetadata="${scrollJs}"></video>`
-                );
-              } else {
-                bubbleContent = bubbleContent.replace(
-                  /\\[图片:[^\\]]*\\]/g,
-                  `<img class="chat-img" src="${mediaUrl}" alt="图片" onclick="openLightbox('${mediaUrl}')" loading="lazy" onload="${scrollJs}">`
-                );
-              }
+            // Append to DOM (incremental for new real-time messages)
+            // Date separator check against last element
+            const dateLabel = getDateLabel(m.time);
+            const existingSeps = msgsEl.querySelectorAll('.date-separator');
+            const lastSep = existingSeps.length > 0 ? existingSeps[existingSeps.length - 1] : null;
+            const lastSepLabel = lastSep ? lastSep.textContent.trim() : '';
+            if (dateLabel !== lastSepLabel) {
+              insertDateSeparator(dateLabel);
             }
-
-            div.innerHTML = `
-              <div class="msg-meta">
-                <span>${isSend ? '我 ➞ ' + m.contact : m.contact}</span>
-                <span>${date}</span>
-              </div>
-              ${tags.length ? `<div class="msg-tags">${tags.join('')}</div>` : ''}
-              <div class="msg-bubble">${bubbleContent}</div>
-            `;
-            msgsEl.appendChild(div);
+            msgsEl.appendChild(renderMessageEl(m));
             appended = true;
           }
         });
         if (initialLoad) {
+          // Insert load-more button at top
+          const loadWrap = document.createElement('div');
+          loadWrap.className = 'load-more-wrap';
+          loadWrap.innerHTML = '<button class="load-more-btn" id="loadMoreBtn" onclick="loadMoreHistory()">⬆ 加载更多历史</button>';
+          msgsEl.insertBefore(loadWrap, msgsEl.firstChild);
+          if (data.messages.length > 0) {
+            oldestLoadedId = Math.min(...data.messages.map(m => m.id));
+          }
           msgsEl.scrollTop = msgsEl.scrollHeight;
           initialLoad = false;
         } else if (appended && isScrolledToBottom) {
@@ -731,10 +953,9 @@ def render_logged_in():
     });
 
     sendBtn.addEventListener('click', sendMsg);
-    contactIpt.addEventListener('input', renderDeliveryStatus);
 
     textIpt.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMsg();
       }
