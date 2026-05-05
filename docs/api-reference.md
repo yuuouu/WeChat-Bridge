@@ -185,6 +185,10 @@ curl http://localhost:5200/api/status
 | `WEBHOOK_TIMEOUT` | `5` | Webhook 请求超时（秒，1~30） |
 | `API_TOKEN` | _(空)_ | API 鉴权 Token，未设置则无鉴权 |
 | `TOKEN_FILE` | `/data/token.json` | 登录凭证持久化路径 |
+| `AI_ENABLED` | `false` | 是否启用 AI 助手 |
+| `AI_PROVIDER` | `openai` | AI 厂商预设：`openai` / `gemini` / `claude` / `deepseek` / `minimax`，也可填自定义 OpenAI-compatible 厂商名 |
+| `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
+| `AI_BASE_URL` | _(空)_ | 自定义 OpenAI-compatible `/v1` Base URL，留空使用预设厂商默认地址 |
 | `CONTACTS_FILE` | `/data/contacts.json` | 联系人缓存路径 |
 | `AI_CONFIG_FILE` | `/data/ai_config.json` | AI 助手配置文件路径 |
 | `TZ` | `Asia/Shanghai` | 容器时区 |

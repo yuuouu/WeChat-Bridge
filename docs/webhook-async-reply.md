@@ -104,37 +104,14 @@ curl -X POST http://192.168.100.1:5200/api/send \
 
 ---
 
-## 最小示例
+## 即跑示例
 
-仓库里已经提供了一个最小可运行示例：
+推荐先跑完整的日记收集器示例，详细搭建步骤见 **[Webhook 日记示例](webhook-examples.md)**：
 
-[`examples/webhook_receiver.py`](../examples/webhook_receiver.py)
-
-它会：
-
-- 接收 `WeChat Bridge` 的 Webhook
-- 解析 `command / args`
-- 调用 `/api/send` 异步回写
-
-启动方式：
-
-```bash
-export BRIDGE_BASE_URL=http://192.168.100.1:5200
-export BRIDGE_API_TOKEN=YOUR_TOKEN
-python3 examples/webhook_receiver.py
-```
-
-然后在微信里发送：
-
-```text
-/weather shanghai
-```
-
-或：
-
-```text
-/echo hello
-```
+| 示例 | 文件 | Webhook 模式 | 场景 |
+|-----|------|:---:|------|
+| **微信日记收集器** | [`webhook_journal.py`](../examples/webhook_journal.py) | `all_messages` | `/rj` 开始 → 收集文字/图片 → `/exit` 汇总 |
+| **无状态命令响应** | [`webhook_receiver.py`](../examples/webhook_receiver.py) | `unknown_command` | 一问一答：`/weather`、`/echo` |
 
 ---
 
@@ -187,6 +164,7 @@ python3 examples/webhook_receiver.py
 - `WeChat Bridge` 只做桥接和通用能力
 - 你的私有服务负责天气、资产、提醒、Agent 等业务逻辑
 - 外部服务统一通过 `/api/send` 回写
+- 无状态场景用 `unknown_command`，有状态 session 场景用 `all_messages`
 
 这样后续无论你把业务服务换成：
 
