@@ -71,6 +71,68 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(history[-1]["content"], "reply")
         self.assertTrue(self.saved_configs)
 
+    def test_minimax_uses_provider_specific_payload(self):
+        calls = []
+        self.config.update(
+            {
+                "provider": "minimax",
+                "model": "MiniMax-M2.7",
+                "base_url": "",
+            }
+        )
+
+        class _FakeResp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [{"message": {"content": "reply"}}],
+                    "usage": {"total_tokens": 12},
+                }
+
+        def fake_post(endpoint, json, headers, timeout):
+            calls.append({"endpoint": endpoint, "json": json, "headers": headers, "timeout": timeout})
+            return _FakeResp()
+
+        with patch("ai_chat.requests.post", side_effect=fake_post):
+            self.assertEqual(self.manager.chat("u1", "hello"), "reply")
+        self.assertEqual(calls[0]["endpoint"], "https://api.minimax.io/v1/chat/completions")
+        self.assertEqual(calls[0]["json"]["max_completion_tokens"], 2048)
+        self.assertNotIn("max_tokens", calls[0]["json"])
+        self.assertEqual(calls[0]["json"]["temperature"], 1.0)
+        self.assertTrue(calls[0]["json"]["reasoning_split"])
+
+    def test_custom_openai_compatible_provider_uses_custom_base_url(self):
+        calls = []
+        self.config.update(
+            {
+                "provider": "ollama",
+                "model": "qwen3:8b",
+                "base_url": "http://localhost:11434/v1",
+            }
+        )
+
+        class _FakeResp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [{"message": {"content": "reply"}}],
+                    "usage": {"total_tokens": 12},
+                }
+
+        def fake_post(endpoint, json, headers, timeout):
+            calls.append({"endpoint": endpoint, "json": json, "headers": headers, "timeout": timeout})
+            return _FakeResp()
+
+        with patch("ai_chat.requests.post", side_effect=fake_post):
+            self.assertEqual(self.manager.chat("u1", "hello"), "reply")
+        self.assertEqual(calls[0]["endpoint"], "http://localhost:11434/v1/chat/completions")
+        self.assertEqual(calls[0]["json"]["max_tokens"], 2048)
+        self.assertEqual(calls[0]["json"]["temperature"], 0.7)
+
 
 if __name__ == "__main__":
     unittest.main()

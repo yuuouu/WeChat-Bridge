@@ -72,6 +72,11 @@ class EnvOverrideTests(unittest.TestCase):
         self.assertEqual(config["model"], "gemini-2.0-flash")
         self.assertTrue(config["enabled"])
 
+    @patch.dict(os.environ, {"AI_BASE_URL": "https://llm.example.com/v1"}, clear=False)
+    def test_ai_base_url_env_var_overrides_defaults(self):
+        config = cfg.load_config()
+        self.assertEqual(config["base_url"], "https://llm.example.com/v1")
+
     @patch.dict(
         os.environ,
         {
@@ -202,6 +207,13 @@ class ProviderInfoTests(unittest.TestCase):
     def test_claude_has_anthropic_sdk_flag(self):
         info = cfg.get_provider_info("claude")
         self.assertEqual(info["sdk"], "anthropic")
+
+    def test_minimax_provider_uses_openai_compatible_defaults(self):
+        info = cfg.get_provider_info("minimax")
+        self.assertEqual(info["name"], "MiniMax")
+        self.assertEqual(info["base_url"], "https://api.minimax.io/v1")
+        self.assertEqual(info["max_tokens_param"], "max_completion_tokens")
+        self.assertEqual(info["models"][0]["id"], "MiniMax-M2.7")
 
 
 if __name__ == "__main__":

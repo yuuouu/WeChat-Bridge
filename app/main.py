@@ -39,6 +39,7 @@ logger = logging.getLogger("wechat-bridge")
 sys.path.insert(0, os.path.join(_project_root, "app"))
 
 import config as cfg
+import db
 import web
 from bridge import WeChatBridge
 from ilink import ILinkClient
@@ -75,6 +76,11 @@ def main():
 
     # ==== 检测更新 ====
     def check_for_updates():
+        update_base_url = os.environ.get("UPDATE_CHECK_URL", "https://wb.yuuou.qzz.io")
+        if os.environ.get("DISABLE_UPDATE_CHECK", "").lower() in ("1", "true"):
+            logger.debug("更新检查已禁用 (DISABLE_UPDATE_CHECK=1)")
+            return
+
         try:
             import json
             import subprocess
@@ -91,7 +97,7 @@ def main():
                 local_commit = None
 
             req = urllib.request.Request(
-                "https://api.github.com/repos/yuuouu/WeChat-Bridge/commits/main",
+                update_base_url,
                 headers={"User-Agent": "WeChat-Bridge-Updater"},
             )
             with urllib.request.urlopen(req, timeout=5) as response:
@@ -111,6 +117,35 @@ def main():
                     logger.info("✅ 更新检查: 最新远程版本为 %s", remote_commit[:7] if remote_commit else "未知")
         except Exception as e:
             logger.debug("检测更新失败: %s", e)
+
+        # ── 可选匿名遥测（默认关闭，Web 设置或 TELEMETRY_ENABLED=1 启用）──
+        telemetry_on = os.environ.get("TELEMETRY_ENABLED", "").lower() in ("1", "true")
+        if not telemetry_on:
+            telemetry_on = bool(runtime_cfg.get("telemetry_enabled"))
+        if not telemetry_on:
+            return
+        try:
+            import json
+            import platform
+            import urllib.request
+
+            payload = json.dumps({
+                "v": __version__,
+                "os": platform.system().lower(),
+                "arch": platform.machine(),
+                "py": f"{sys.version_info.major}.{sys.version_info.minor}",
+                "mode": "docker" if os.path.exists("/.dockerenv") else "native",
+            }).encode()
+            req = urllib.request.Request(
+                f"{update_base_url}/telemetry",
+                data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "WeChat-Bridge-Updater"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5)
+            logger.debug("📊 匿名遥测已发送")
+        except Exception:
+            pass  # 静默失败，绝不影响主流程
 
     import threading
 
@@ -137,6 +172,7 @@ def main():
     def shutdown(signum, frame):
         logger.info("收到退出信号，正在关闭...")
         wechat_bridge.stop()
+        db.close_db()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, shutdown)

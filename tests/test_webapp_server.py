@@ -26,9 +26,14 @@ class _FakeClient:
         self.logged_in = logged_in
         self.bot_id = "bot-test"
         self.cleared = False
+        self.qr_status_response = {"status": "wait"}
 
     def clear_token(self):
         self.cleared = True
+
+    def poll_qrcode_status(self, qrcode):
+        self.polled_qrcode = qrcode
+        return self.qr_status_response
 
 
 class _FakeBridge:
@@ -187,6 +192,18 @@ class WebAppServerTests(unittest.TestCase):
         self.assertEqual(saved["webhook_url"], "https://example.com/webhook")
         self.assertEqual(saved["webhook_mode"], "all_messages")
         self.assertEqual(saved["webhook_timeout"], 9)
+
+    def test_expired_qr_status_clears_matching_qr_cache(self):
+        self.context.qr_cache.data = {"qrcode": "qr-expired", "qrcode_img_content": "https://example.com/qr"}
+        self.context.qr_cache.updated_at = 123.0
+        self.client.qr_status_response = {"status": "expired"}
+
+        status, _, body = self._request("/api/qr_status?qrcode=qr-expired")
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["status"], "expired")
+        self.assertIsNone(self.context.qr_cache.data)
+        self.assertEqual(self.context.qr_cache.updated_at, 0.0)
 
 
 if __name__ == "__main__":

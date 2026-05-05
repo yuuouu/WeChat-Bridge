@@ -103,6 +103,8 @@ def handle_contacts(handler, ctx, params):
 
 
 def handle_messages(handler, ctx, params):
+    if not handler._check_api_token():
+        return
     limit = int(params.get("limit", ["200"])[0])
     before_id = params.get("before_id", [None])[0]
     if before_id:
@@ -133,6 +135,11 @@ def handle_qr_status(handler, ctx, params):
 
     try:
         status_data = ctx.client.poll_qrcode_status(qrcode)
+        if status_data.get("status") == "expired":
+            cached_qrcode = (ctx.qr_cache.data or {}).get("qrcode")
+            if cached_qrcode == qrcode:
+                ctx.qr_cache.data = None
+                ctx.qr_cache.updated_at = 0.0
         if ctx.client.logged_in and status_data.get("status") == "confirmed":
             ctx.bridge._setup_data_dir()
             ctx.bridge._load_contacts()
@@ -314,6 +321,7 @@ def handle_post_ai_config(handler, ctx, params, body):
         "webhook_url",
         "webhook_mode",
         "webhook_timeout",
+        "telemetry_enabled",
     ):
         if key in data:
             current[key] = data[key]

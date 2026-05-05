@@ -11,6 +11,7 @@ from webapp.context import WebAppContext
 from webapp.ui.layout import HTML_TEMPLATE
 
 logger = logging.getLogger(__name__)
+QR_CACHE_TTL_SECONDS = 60
 
 
 def _url_to_qr_base64(url: str) -> str:
@@ -31,8 +32,8 @@ def _url_to_qr_base64(url: str) -> str:
 
 def render_qr_page(ctx: WebAppContext):
     """二维码登录页面"""
-    # 每 3 分钟刷新一次二维码
-    if not ctx.qr_cache.data or (time.time() - ctx.qr_cache.updated_at > 180):
+    # iLink 登录二维码有效期较短，缓存不能太久，否则微信端会提示二维码过期。
+    if not ctx.qr_cache.data or (time.time() - ctx.qr_cache.updated_at > QR_CACHE_TTL_SECONDS):
         try:
             ctx.qr_cache.data = ctx.client.get_qrcode()
             ctx.qr_cache.updated_at = time.time()
@@ -74,7 +75,7 @@ def render_qr_page(ctx: WebAppContext):
       <img src="data:image/png;base64,{img_b64}" alt="QR Code">
     </div>
     <p class="hint">请使用微信扫描上方二维码<br>扫码后将自动跳转到已登录状态</p>
-    <button class="refresh-btn" onclick="location.reload()">刷新二维码</button>
+    <button class="refresh-btn" onclick="location.href='/?refresh_qr=' + Date.now()">刷新二维码</button>
   </div>
 """
     # 自动轮询扫码状态
@@ -87,6 +88,7 @@ def render_qr_page(ctx: WebAppContext):
       const resp = await fetch('/api/qr_status?qrcode={qrcode_id}');
       const data = await resp.json();
       if (data.logged_in) location.reload();
+      else if (data.status === 'expired') location.href='/?refresh_qr=' + Date.now();
     }} catch(e) {{}}
     checking = false;
   }}, 3000);

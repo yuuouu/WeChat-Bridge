@@ -46,6 +46,19 @@ PROVIDERS = {
             {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner (R1)"},
         ],
     },
+    "minimax": {
+        "name": "MiniMax",
+        "base_url": "https://api.minimax.io/v1",
+        "max_tokens_param": "max_completion_tokens",
+        "temperature": 1.0,
+        "extra_body": {"reasoning_split": True},
+        "models": [
+            {"id": "MiniMax-M2.7", "name": "MiniMax M2.7"},
+            {"id": "MiniMax-M2.7-highspeed", "name": "MiniMax M2.7 Highspeed"},
+            {"id": "MiniMax-M2.5", "name": "MiniMax M2.5"},
+            {"id": "MiniMax-M2.1", "name": "MiniMax M2.1"},
+        ],
+    },
 }
 
 DEFAULT_CONFIG = {
@@ -63,6 +76,7 @@ DEFAULT_CONFIG = {
     "webhook_url": "",
     "webhook_mode": "unknown_command",
     "webhook_timeout": 5,
+    "telemetry_enabled": False,
 }
 
 
@@ -93,6 +107,8 @@ def load_config() -> dict:
         config["model"] = os.environ["AI_MODEL"]
     if os.environ.get("AI_ENABLED"):
         config["enabled"] = os.environ["AI_ENABLED"].lower() in ("true", "1", "yes")
+    if os.environ.get("AI_BASE_URL"):
+        config["base_url"] = os.environ["AI_BASE_URL"]
     if os.environ.get("WEBHOOK_URL"):
         config["webhook_url"] = os.environ["WEBHOOK_URL"]
     if os.environ.get("WEBHOOK_ENABLED"):

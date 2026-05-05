@@ -84,6 +84,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if path == "/":
+            if "refresh_qr" in params:
+                ctx.qr_cache.data = None
+                ctx.qr_cache.updated_at = 0.0
             if not check_web_session(self, ctx.api_token, ctx.session_secret):
                 self._html_response(render_auth_page())
             elif ctx.client.logged_in:

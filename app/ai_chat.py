@@ -1,6 +1,6 @@
 """
 AI 对话模块
-- 统一适配 OpenAI / Gemini / DeepSeek（OpenAI 兼容 REST API）
+- 统一适配 OpenAI / Gemini / DeepSeek / MiniMax 与自定义 OpenAI 兼容 REST API
 - Claude 走 Anthropic Messages API（仅 payload 结构不同）
 - 全部使用 requests 库，零额外依赖
 - 按 user_id 隔离会话历史（OrderedDict LRU 防 OOM）
@@ -127,7 +127,7 @@ class AIChatManager:
                     "output_tokens", 0
                 )
             else:
-                # OpenAI / Gemini / DeepSeek 统一走 OpenAI 兼容 REST API
+                # OpenAI-compatible 厂商统一走 Chat Completions REST API
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -135,9 +135,10 @@ class AIChatManager:
                 payload = {
                     "model": model,
                     "messages": messages,
-                    "max_tokens": 2048,
-                    "temperature": 0.7,
+                    "temperature": provider_info.get("temperature", 0.7),
                 }
+                payload[provider_info.get("max_tokens_param", "max_tokens")] = 2048
+                payload.update(provider_info.get("extra_body", {}))
                 endpoint = effective_url
                 if "chat/completions" not in endpoint:
                     endpoint = f"{endpoint.rstrip('/')}/chat/completions"

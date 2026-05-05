@@ -147,6 +147,7 @@ def render_logged_in():
           <option value="gemini" label="Google Gemini">
           <option value="claude" label="Anthropic Claude">
           <option value="deepseek" label="DeepSeek">
+          <option value="minimax" label="MiniMax">
         </datalist>
       </div>
       <div class="form-group">
@@ -160,7 +161,7 @@ def render_logged_in():
       </div>
       <div class="form-group">
         <label class="form-label">自定义 Base URL（可选）</label>
-        <input class="form-input" id="aiBaseUrl" placeholder="留空使用默认地址">
+        <input class="form-input" id="aiBaseUrl" placeholder="留空使用默认地址；自定义厂商填写 OpenAI-compatible /v1 地址">
       </div>
       <div class="form-group">
         <label class="form-label">System Prompt</label>
@@ -203,6 +204,17 @@ def render_logged_in():
 
     <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
 
+    <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">📊 匿名使用统计</h3>
+    <div class="form-group">
+      <div class="toggle-switch" onclick="toggleTelemetry()">
+        <div class="toggle-track" id="telemetryToggle"><div class="toggle-knob"></div></div>
+        <span id="telemetryToggleLabel">匿名统计已关闭</span>
+      </div>
+      <div style="color:#888; font-size:12px; margin-top:6px;">开启后，启动时发送匿名技术指标（版本号、操作系统、架构、Python 版本、部署方式），帮助开发者了解兼容性需求。<strong>不含任何个人信息。</strong></div>
+    </div>
+
+    <div style="border-top: 1px solid #444; margin: 20px 0;"></div>
+
     <div style="text-align:center; color:#666; font-size:12px; line-height:1.8;">
       <a href="https://github.com/yuuouu/WeChat-Bridge" target="_blank" rel="noopener"
          style="color:#818cf8; text-decoration:none; transition:color 0.2s;"
@@ -227,9 +239,11 @@ def render_logged_in():
       gemini: [{id:'gemini-2.0-flash',name:'Gemini 2.0 Flash'},{id:'gemini-2.5-flash-preview-04-17',name:'Gemini 2.5 Flash'},{id:'gemini-2.5-pro-preview-03-25',name:'Gemini 2.5 Pro'}],
       claude: [{id:'claude-sonnet-4-20250514',name:'Claude Sonnet 4'},{id:'claude-3-5-haiku-20241022',name:'Claude 3.5 Haiku'}],
       deepseek: [{id:'deepseek-chat',name:'DeepSeek Chat (V3)'},{id:'deepseek-reasoner',name:'DeepSeek Reasoner (R1)'}],
+      minimax: [{id:'MiniMax-M2.7',name:'MiniMax M2.7'},{id:'MiniMax-M2.7-highspeed',name:'MiniMax M2.7 Highspeed'},{id:'MiniMax-M2.5',name:'MiniMax M2.5'},{id:'MiniMax-M2.1',name:'MiniMax M2.1'}],
     };
     let aiEnabled = false;
     let webhookEnabled = false;
+    let telemetryEnabled = false;
     let keepaliveMinutes = 0;
 
     // 生成保活时间选择器选项
@@ -307,6 +321,12 @@ def render_logged_in():
       document.getElementById('aiSettingsGroup').style.display = aiEnabled ? 'block' : 'none';
     }
 
+    function toggleTelemetry() {
+      telemetryEnabled = !telemetryEnabled;
+      document.getElementById('telemetryToggle').classList.toggle('on', telemetryEnabled);
+      document.getElementById('telemetryToggleLabel').textContent = telemetryEnabled ? '匿名统计已开启' : '匿名统计已关闭';
+    }
+
     function toggleWebhook() {
       webhookEnabled = !webhookEnabled;
       document.getElementById('webhookToggle').classList.toggle('on', webhookEnabled);
@@ -357,6 +377,10 @@ def render_logged_in():
         document.getElementById('webhookToggle').classList.toggle('on', webhookEnabled);
         document.getElementById('webhookToggleLabel').textContent = webhookEnabled ? 'Webhook 已启用' : 'Webhook 已关闭';
         document.getElementById('webhookSettingsGroup').style.display = webhookEnabled ? 'block' : 'none';
+
+        telemetryEnabled = !!cfg.telemetry_enabled;
+        document.getElementById('telemetryToggle').classList.toggle('on', telemetryEnabled);
+        document.getElementById('telemetryToggleLabel').textContent = telemetryEnabled ? '匿名统计已开启' : '匿名统计已关闭';
 
         setKAFromMinutes(cfg.keepalive_remind_minutes || 0);
 
@@ -426,6 +450,7 @@ def render_logged_in():
         webhook_url: document.getElementById('webhookUrl').value.trim(),
         webhook_mode: document.getElementById('webhookMode').value,
         webhook_timeout: parseInt(document.getElementById('webhookTimeout').value) || 5,
+        telemetry_enabled: telemetryEnabled,
       };
       if (cfg.webhook_enabled && !cfg.webhook_url) {
         showToast('请先填写 Webhook 地址', 'error');

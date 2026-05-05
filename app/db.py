@@ -5,6 +5,8 @@ SQLite 消息与投递状态持久化存储
 - 数据文件存放在 /data/messages.db，通过 Docker volume 持久化
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -56,6 +58,10 @@ def close_db():
     global _conn
     with _lock:
         if _conn is not None:
+            try:
+                _conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
             _conn.close()
             _conn = None
 
@@ -247,10 +253,13 @@ def init_db(db_file: str = None):
         retention_days = int(os.environ.get("MSG_RETENTION_DAYS", "90"))
         if retention_days > 0:
             cutoff = _now_ts() - retention_days * 86400
-            cursor = conn.execute("DELETE FROM messages WHERE time < ?", (cutoff,))
-            if cursor.rowcount > 0:
-                conn.commit()
-                logger.info("已清理 %d 条超过 %d 天的旧消息", cursor.rowcount, retention_days)
+            try:
+                cursor = conn.execute("DELETE FROM messages WHERE time < ?", (cutoff,))
+                if cursor.rowcount > 0:
+                    conn.commit()
+                    logger.info("已清理 %d 条超过 %d 天的旧消息", cursor.rowcount, retention_days)
+            except sqlite3.OperationalError as e:
+                logger.warning("启动清理跳过（数据库忙）: %s，将在下次启动时重试", e)
 
         count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         logger.info("消息数据库已初始化: %s (现有 %d 条记录)", _active_db_file, count)
