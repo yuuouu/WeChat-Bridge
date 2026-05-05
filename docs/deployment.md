@@ -95,3 +95,19 @@ docker compose up -d
 
 **Windows 一键脚本更新：**
 如果安装时使用了 PowerShell 一键脚本，可直接在此机器上重新运行该安装命令。脚本会自动进行文件拉取与覆盖、更新依赖并重启服务，你的配置和 `data/` 目录将安全保留。
+
+---
+
+## 卸载
+
+卸载操作默认保留 `data/` 目录（包含消息数据库、配置和缓存）。
+
+```bash
+# Windows (在项目根目录下执行)
+powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1
+
+# macOS / Linux (在项目根目录下执行)
+bash scripts/uninstall.sh
+```
+
+如需彻底清除，卸载完成后请手动删除项目所在目录（如果你保留了原有的 `data/`）或使用命令强制删除。
