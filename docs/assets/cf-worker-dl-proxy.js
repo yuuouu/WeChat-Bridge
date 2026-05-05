@@ -33,7 +33,7 @@ const GITHUB_API = `https://api.github.com/repos/${REPO}/commits/main`;
 const CACHE_TTL = 600;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -89,38 +89,14 @@ export default {
       });
     }
 
-    // ── /archive/main.tar.gz ── 源码包代理
+    // ── /archive/main.tar.gz ── 源码包代理（24h 边缘缓存）
     if (path === '/archive/main.tar.gz') {
-      await bump(env, 'dl:archive');
-      const resp = await fetch(GITHUB_ARCHIVE, {
-        headers: { 'User-Agent': 'WB-Proxy' },
-        redirect: 'follow',
-      });
-      if (!resp.ok) return new Response('fetch failed', { status: resp.status });
-      return new Response(resp.body, {
-        headers: {
-          'Content-Type': 'application/gzip',
-          'Content-Disposition': 'attachment; filename="wechat-bridge.tar.gz"',
-          'Cache-Control': 'public, max-age=300',
-        },
-      });
+      return fetchAndCacheArchive(request, env, ctx, GITHUB_ARCHIVE, 'application/gzip', 'wechat-bridge.tar.gz');
     }
 
-    // ── /archive/main.zip ── 源码包代理（zip 格式，Windows）
+    // ── /archive/main.zip ── 源码包代理（24h 边缘缓存）
     if (path === '/archive/main.zip') {
-      await bump(env, 'dl:archive');
-      const resp = await fetch(GITHUB_ARCHIVE_ZIP, {
-        headers: { 'User-Agent': 'WB-Proxy' },
-        redirect: 'follow',
-      });
-      if (!resp.ok) return new Response('fetch failed', { status: resp.status });
-      return new Response(resp.body, {
-        headers: {
-          'Content-Type': 'application/zip',
-          'Content-Disposition': 'attachment; filename="wechat-bridge.zip"',
-          'Cache-Control': 'public, max-age=300',
-        },
-      });
+      return fetchAndCacheArchive(request, env, ctx, GITHUB_ARCHIVE_ZIP, 'application/zip', 'wechat-bridge.zip');
     }
 
     // ── POST /telemetry ── 可选的匿名技术指标上报
@@ -195,6 +171,42 @@ async function handleTelemetry(request, env) {
     }
   } catch (e) {}
   return new Response('ok');
+}
+
+// ── 源码包 24h 边缘缓存 ──
+async function fetchAndCacheArchive(request, env, ctx, archiveUrl, contentType, filename) {
+  const cache = caches.default;
+  const cacheKey = new Request(new URL(request.url).toString(), { method: 'GET' });
+
+  // 检查边缘缓存
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    await bump(env, 'dl:archive');
+    const headers = new Headers(cached.headers);
+    headers.set('X-Cache', 'HIT');
+    return new Response(cached.body, { headers });
+  }
+
+  // 缓存未命中，回源 GitHub
+  await bump(env, 'dl:archive');
+  const resp = await fetch(archiveUrl, {
+    headers: { 'User-Agent': 'WB-Proxy' },
+    redirect: 'follow',
+  });
+  if (!resp.ok) return new Response('fetch failed', { status: resp.status });
+
+  const response = new Response(resp.body, {
+    headers: {
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Cache-Control': 'public, max-age=86400',
+      'X-Cache': 'MISS',
+    },
+  });
+
+  // 异步写入边缘缓存，不阻塞响应
+  ctx.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
 }
 
 // ── 计数器 ──

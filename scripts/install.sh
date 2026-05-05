@@ -2,6 +2,7 @@
 # ============================================================
 #  WeChat Bridge — 一键安装脚本 (macOS / Linux)
 #  安装: curl -fsSL https://wb.yuuou.qzz.io/install.sh | bash
+#  指定 pip 镜像: curl -fsSL ... | bash -s -- --mirror https://pypi.tuna.tsinghua.edu.cn/simple
 #  卸载: bash wechat-bridge/scripts/uninstall.sh
 #  卸载默认保留 data/ 目录，需手动 rm -rf wechat-bridge/data
 # ============================================================
@@ -11,6 +12,15 @@ REPO="yuuouu/WeChat-Bridge"
 CF_PROXY="https://wb.yuuou.qzz.io"
 INSTALL_DIR="${WECHAT_BRIDGE_DIR:-$(pwd)/wechat-bridge}"
 PORT="${WECHAT_BRIDGE_PORT:-5200}"
+
+# ── 参数解析（支持 curl ... | bash -s -- --mirror URL）──
+PIP_MIRROR="${PIP_MIRROR:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --mirror) PIP_MIRROR="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 
 # ── 颜色 ──
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
@@ -55,23 +65,44 @@ download_from_proxy() {
   curl -fsSL "${CF_PROXY}/archive/main.tar.gz" | tar xz --strip-components=1 -C "${INSTALL_DIR}"
 }
 
+# ── 从 GitHub 直接下载源码包 ──
+download_from_github() {
+  info "正在从 GitHub 下载源码包..."
+  mkdir -p "${INSTALL_DIR}"
+  curl -fsSL "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" \
+    | tar xz --strip-components=1 -C "${INSTALL_DIR}"
+}
+
+# ── GitHub 探针（3 秒超时）──
+GITHUB_OK=false
+if curl -fsS --max-time 3 -o /dev/null "https://github.com/${REPO}" 2>/dev/null; then
+  GITHUB_OK=true
+  info "GitHub 直连可用"
+else
+  warn "GitHub 直连不可达，将使用 CDN 代理"
+fi
+
 # ── 克隆/下载代码 ──
-if command -v git &>/dev/null; then
-  if [ -d "${INSTALL_DIR}/.git" ]; then
-    warn "目录已存在，正在更新..."
-    cd "${INSTALL_DIR}" && git pull --ff-only || {
-      warn "git pull 失败，回退到 CDN 代理下载..."
-      cd - >/dev/null
-      rm -rf "${INSTALL_DIR}"
-      download_from_proxy
-    }
-  else
-    info "正在克隆仓库..."
-    git clone --depth 1 "https://github.com/${REPO}.git" "${INSTALL_DIR}" 2>/dev/null || {
-      warn "git clone 失败，回退到 CDN 代理下载..."
-      download_from_proxy
-    }
-  fi
+if [ -d "${INSTALL_DIR}/.git" ]; then
+  warn "目录已存在，正在更新..."
+  cd "${INSTALL_DIR}" && git pull --ff-only || {
+    warn "git pull 失败，回退到 CDN 代理下载..."
+    cd - >/dev/null
+    rm -rf "${INSTALL_DIR}"
+    download_from_proxy
+  }
+elif $GITHUB_OK && command -v git &>/dev/null; then
+  info "正在从 GitHub 克隆仓库..."
+  git clone --depth 1 "https://github.com/${REPO}.git" "${INSTALL_DIR}" 2>/dev/null || {
+    warn "git clone 失败，回退到 CDN 代理下载..."
+    download_from_proxy
+  }
+elif $GITHUB_OK; then
+  download_from_github || {
+    warn "下载失败，回退到 CDN 代理..."
+    rm -rf "${INSTALL_DIR}"
+    download_from_proxy
+  }
 else
   download_from_proxy
 fi
@@ -94,7 +125,12 @@ if [[ "$MODE" == "docker" ]]; then
 else
   # ── 原生 Python 模式 ──
   info "正在安装 Python 依赖..."
-  pip3 install -q -r app/requirements.txt
+  if [ -n "$PIP_MIRROR" ]; then
+    info "使用镜像源: $PIP_MIRROR"
+    pip3 install -q -r app/requirements.txt -i "$PIP_MIRROR"
+  else
+    pip3 install -q -r app/requirements.txt
+  fi
 
   echo ""
   echo -e "${GREEN}══════════════════════════════════${NC}"
