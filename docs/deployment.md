@@ -10,7 +10,58 @@
 
 ---
 
-## 手动安装
+## 本地 ZIP 安装（无需 Git）
+
+适合没有安装 Git、或只想下载源码包后本地解压运行的环境。只需准备 Python 3.10+。
+
+下载地址：
+
+- GitHub ZIP：`https://github.com/yuuouu/WeChat-Bridge/archive/refs/heads/main.zip`
+- CDN 代理 ZIP：`https://wb.yuuou.qzz.io/archive/main.zip`
+
+如果使用浏览器下载，下载完成后解压，将解压出的 `WeChat-Bridge-main` 文件夹重命名为 `wechat-bridge`，然后进入该目录执行启动脚本。
+
+**macOS / Linux：**
+
+```bash
+curl -L -o wechat-bridge.zip https://github.com/yuuouu/WeChat-Bridge/archive/refs/heads/main.zip
+unzip wechat-bridge.zip
+mv WeChat-Bridge-main wechat-bridge
+cd wechat-bridge
+
+python3 -m pip install -r app/requirements.txt
+bash scripts/start.sh
+```
+
+如果 GitHub 下载较慢或不可用，可以把第一行替换为：
+
+```bash
+curl -L -o wechat-bridge.zip https://wb.yuuou.qzz.io/archive/main.zip
+```
+
+**Windows PowerShell：**
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/yuuouu/WeChat-Bridge/archive/refs/heads/main.zip" -OutFile "wechat-bridge.zip"
+Expand-Archive -Path "wechat-bridge.zip" -DestinationPath "." -Force
+Rename-Item -Path ".\WeChat-Bridge-main" -NewName "wechat-bridge"
+cd .\wechat-bridge
+
+python -m pip install -r app\requirements.txt
+scripts\start.bat
+```
+
+如果 GitHub 下载较慢或不可用，可以把第一行替换为：
+
+```powershell
+Invoke-WebRequest -Uri "https://wb.yuuou.qzz.io/archive/main.zip" -OutFile "wechat-bridge.zip"
+```
+
+启动完成后打开 `http://localhost:5200`，扫码登录即可。后续启动和停止可继续使用 `scripts/start.*`、`scripts/stop.*`。
+
+---
+
+## 手动安装（Git）
 
 只需 Python 3.10+：
 
@@ -44,6 +95,7 @@ services:
       - WEBHOOK_MODE=unknown_command  # 可选：unknown_command / all_messages
       - WEBHOOK_TIMEOUT=5      # 可选：Webhook 请求超时（秒）
       - API_TOKEN=             # 可选：API 鉴权 Token
+      - MARKDOWN_MODE=          # 可选：normalize 整理普通通知为 Markdown；plain 降级为纯文本；留空默认按 Markdown 发送
       - TZ=Asia/Shanghai
 EOF
 

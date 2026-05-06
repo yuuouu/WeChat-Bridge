@@ -170,6 +170,31 @@ class WebAppServerTests(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(self.bridge.sent, [("Alice", "hello", "api", "")])
 
+    def test_api_push_post_json_composes_title_and_normalizes_markdown(self):
+        payload = json.dumps(
+            {
+                "to": "Alice",
+                "title": "市场简报 11:05",
+                "content": "━━━━━━━━━━━━━━\n🔹 金财互联: +0.66%",
+                "markdown": "normalize",
+            }
+        ).encode("utf-8")
+        status, _, body = self._request(
+            "/api/push",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(
+            self.bridge.sent,
+            [("Alice", "## 市场简报 11:05\n\n---\n\n- 金财互联: +0.66%", "api_push", "市场简报 11:05")],
+        )
+
     def test_api_ai_config_persists_webhook_settings(self):
         payload = json.dumps(
             {

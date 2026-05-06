@@ -24,9 +24,36 @@ curl -X POST http://localhost:5200/api/send \
 # 多播发送：逗号分隔多个联系人（每人间隔 0.5s 防风控）
 curl "http://localhost:5200/api/send?to=老婆,家庭群&text=晚饭做好了"
 
+# Markdown 文本：发送 Markdown，由微信侧渲染常见文本格式
+curl -X POST http://localhost:5200/api/send \
+  -H "Content-Type: application/json" \
+  -d '{"to": "好友名称", "markdown": true, "text": "# 重要通知\n\n**加粗** / `代码`\n\n- 事项 A\n- 事项 B"}'
+
+# Markdown 整理：将普通通知整理为 Markdown
+curl "http://localhost:5200/api/send?text=【提醒】%0A🔹 事项A&markdown=normalize"
+
 # Markdown 降级：自动将 Markdown 转为微信友好的纯文本
-curl "http://localhost:5200/api/send?text=**重要通知**&markdown=1"
+curl "http://localhost:5200/api/send?text=**重要通知**&markdown=plain"
 ```
+
+### Markdown 格式说明
+
+`/api/send` 和 `/api/push` 默认支持 Markdown 文本，微信侧可渲染除图片嵌入外的 Markdown 格式，包括标题、加粗、斜体、删除线、行内代码、引用、无序列表、有序列表、任务列表、代码块、表格和链接。
+
+| 参数 | 作用 |
+|---|---|
+| 不传 / `markdown=true` | 发送 Markdown 文本，由微信侧渲染 |
+| `markdown=normalize` | 将 iStoreOS、青龙、Bark 等普通通知整理为 Markdown |
+| `markdown=plain` | 降级为微信友好的纯文本 |
+
+Docker 部署可设置环境变量 `MARKDOWN_MODE=normalize` 作为全局默认值；单次请求传入 `markdown=true` 或 `markdown=plain` 会覆盖该默认值。
+
+如果需要发送“Markdown 文本 + 图片”，请分两步调用：
+
+1. 调用 `/api/send` 发送 Markdown 文本。
+2. 调用 `/api/send_image` 上传并发送图片。
+
+文本里的 `![alt](url)` 只会按文本内容处理，不会触发图片下载或图片消息发送。
 
 ---
 
@@ -91,20 +118,21 @@ curl -X POST http://localhost:5200/api/push \
     "str_title_start": "",
     "str_title_end": "",
     "str_linefeed": "\\n",
-    "str_splitline": "\\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\\n",
-    "str_space": "  ➜  ",
-    "str_tab": " 🔹 ",
+    "str_splitline": "\\n\\n---\\n\\n",
+    "str_space": ": ",
+    "str_tab": "- ",
     "type":
       {
         "to": "\"你的微信user_id\"",
-        "text": "\"📌 ${1}\\n━━━━━━━━━━━━━━━━━\\n${2}\""
+        "markdown": "\"normalize\"",
+        "text": "\"## ${1}\\n\\n${2}\""
       }
 }
 ```
 
-5. 保存并应用，点击「发送测试」即可在微信中收到路由器推送
+5. 保存并应用，点击「发送测试」即可在微信中收到 Markdown 排版后的路由器推送
 
-> 💡 **提示**：`to` 字段中的 `user_id` 可在微信中发送 `/uid` 指令获取。`url` 中的 IP 通常为路由器网关地址（如 `192.168.100.1`）。如设置了 `API_TOKEN`，在 URL 末尾追加 `?token=你的密钥`。
+> 💡 **提示**：`to` 字段中的 `user_id` 可在微信中发送 `/uid` 指令获取。`url` 中的 IP 通常为路由器网关地址（如 `192.168.100.1`）。如设置了 `API_TOKEN`，在 URL 末尾追加 `?token=你的密钥`。如果你已经在 Docker 中设置了 `MARKDOWN_MODE=normalize`，这里的 `markdown` 字段可以省略。
 
 <div align="center">
   <img src="assets/screenshot-luci-wechatpush.png" alt="luci-app-wechatpush 自定义推送配置" width="600">

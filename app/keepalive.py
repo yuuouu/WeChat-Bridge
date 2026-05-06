@@ -55,10 +55,10 @@ class KeepaliveMixin:
                         self.send(
                             user_id,
                             (
-                                f"【⏰ 通道保活提醒】\n"
-                                f"您已超过 {remind_minutes // 60} 小时 {remind_minutes % 60} 分钟未发送消息。\n"
-                                f"微信通道将在约 {remain_h}h{remain_m}m 后自动休眠。\n"
-                                f"回复任意内容即可保持连接。"
+                                "## ⏰ 通道保活提醒\n\n"
+                                f"- **未发言时长**：{remind_minutes // 60} 小时 {remind_minutes % 60} 分钟\n"
+                                f"- **预计休眠**：约 {remain_h}h{remain_m}m 后\n"
+                                "- 回复任意内容即可保持连接"
                             ),
                             source="keepalive",
                         )

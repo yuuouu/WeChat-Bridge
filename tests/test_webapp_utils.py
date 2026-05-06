@@ -1,13 +1,20 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from webapp.auth import check_web_session, make_session_cookie
-from webapp.markdown_utils import markdown_to_plain, should_plainify_markdown
+from webapp.markdown_utils import (
+    apply_markdown_mode,
+    markdown_to_plain,
+    normalize_markdown_text,
+    resolve_markdown_mode,
+    should_plainify_markdown,
+)
 from webapp.request_utils import parse_multipart
 from webapp.webhook_parser import parse_webhook_payload
 
@@ -27,6 +34,27 @@ class WebAppUtilsTests(unittest.TestCase):
     def test_markdown_to_plain_converts_common_markdown(self):
         text = "# 标题\n**加粗** [链接](https://example.com)\n- 列表项"
         self.assertEqual(markdown_to_plain(text), "【标题】\n加粗 链接 (https://example.com)\n• 列表项")
+
+    def test_normalize_markdown_text_handles_istoreos_push_style(self):
+        text = "【市场简报 11:05】\n━━━━━━━━━━━━━━\n📈 自选A股速报\n🔹 金财互联: +0.66%\n👉 请查看详情"
+        self.assertEqual(
+            normalize_markdown_text(text),
+            "## 市场简报 11:05\n\n---\n\n📈 自选A股速报\n- 金财互联: +0.66%\n- 请查看详情",
+        )
+
+    def test_apply_markdown_mode_uses_environment_default_and_raw_override(self):
+        text = "【提醒】\n正文"
+        self.assertEqual(apply_markdown_mode(text, True), text)
+        with patch.dict("os.environ", {"MARKDOWN_MODE": "normalize"}):
+            self.assertEqual(apply_markdown_mode(text), "## 提醒\n\n正文")
+            self.assertEqual(apply_markdown_mode(text, "raw"), text)
+
+    def test_resolve_markdown_mode_uses_public_modes(self):
+        self.assertEqual(resolve_markdown_mode(), "markdown")
+        self.assertEqual(resolve_markdown_mode(True), "markdown")
+        self.assertEqual(resolve_markdown_mode("normalize"), "normalize")
+        self.assertEqual(resolve_markdown_mode("plain"), "plain")
+        self.assertEqual(resolve_markdown_mode("degrade"), "plain")
 
     def test_make_session_cookie_and_check_web_session(self):
         token = "secret"
@@ -61,7 +89,7 @@ class WebAppUtilsTests(unittest.TestCase):
         }
         text = parse_webhook_payload(payload)
         self.assertIn("demo/repo 推送到 main", text)
-        self.assertIn("abcdef1 fix: hello", text)
+        self.assertIn("`abcdef1` fix: hello", text)
 
 
 if __name__ == "__main__":

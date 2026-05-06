@@ -74,12 +74,14 @@ docker compose up -d
       <td align="center"><img src="docs/assets/screenshot-quota-limit.png" alt="10条配额风控机制" width="250"></td>
       <td align="center"><img src="docs/assets/screenshot-daily-push.jpg" alt="日常签到与金价推送" width="250"></td>
       <td align="center"><img src="docs/assets/screenshot-system-push.jpg" alt="系统报告与路由器状态推送" width="250"></td>
+      <td align="center"><img src="docs/assets/screenshot-markdown-render.png" alt="Markdown 文本渲染效果" width="250"></td>
     </tr>
     <tr>
       <td align="center"><em>Web 管理面板</em></td>
       <td align="center"><em>连续 10 条保护</em></td>
       <td align="center"><em>签到 / 金价 / 日常推送</em></td>
       <td align="center"><em>系统报告 / 服务监控 / 路由器状态</em></td>
+      <td align="center"><em>Markdown 文本渲染</em></td>
     </tr>
   </table>
 </div>
@@ -103,6 +105,7 @@ curl -X POST http://localhost:5200/api/send \
 
 - `to`：目标联系人，在微信 Bot 中发送 `/uid` 可获取自己的 `user_id`
 - `API_TOKEN`：接口访问密钥；设置后 `/api/send` 等接口必须携带 `Authorization: Bearer <TOKEN>` 或 URL 参数 `?token=<TOKEN>`，公网开放时务必设置
+- `MARKDOWN_MODE=normalize`：可选，将 iStoreOS、青龙、Bark 等普通通知整理为 Markdown；不设置时默认按 Markdown 文本发送
 
 如果不传 `to`，系统会尝试发送给通讯录里的第一个联系人；生产环境建议显式传入目标联系人或 `user_id`
 
@@ -273,6 +276,15 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 - **不会收集**：微信消息内容、联系人、登录凭证、`API_TOKEN`、AI API Key
 - **保留周期**：数据 180 天后自动过期，Worker 源码见 [docs/assets/cf-worker-dl-proxy.js](docs/assets/cf-worker-dl-proxy.js)
 - **完全关闭版本检查**：部署时设置环境变量 `DISABLE_UPDATE_CHECK=1`，可连启动时版本检查一起禁用
+
+---
+
+<div align="center">
+  <p>
+    <img src="docs/assets/qrcode-tech-discussion.png" alt="加我进群技术讨论" width="88">
+    <br><em>技术讨论</em>
+  </p>
+</div>
 
 ---
 
