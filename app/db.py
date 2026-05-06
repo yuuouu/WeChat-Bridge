@@ -342,63 +342,72 @@ def update_message_delivery_stage_for_pending_ids(pending_ids: list[int], stage:
         conn.commit()
 
 
-def get_delivery_state(user_id: str) -> dict:
-    with _lock:
-        conn = _get_conn()
-        row = conn.execute(
-            "SELECT * FROM delivery_state WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()
+def _fetch_state_unsafe(conn: sqlite3.Connection, user_id: str) -> dict:
+    """在已持锁的情况下读取投递状态（不加锁）。"""
+    row = conn.execute("SELECT * FROM delivery_state WHERE user_id = ?", (user_id,)).fetchone()
     state = _row_to_delivery_state(row)
     state["user_id"] = user_id
     return state
 
 
-def save_delivery_state(state: dict) -> dict:
-    user_id = state["user_id"]
+def _persist_state_unsafe(conn: sqlite3.Connection, state: dict):
+    """在已持锁的情况下写入投递状态（不加锁）。"""
     payload = DEFAULT_DELIVERY_STATE.copy()
     payload.update(state)
     payload["updated_at"] = payload.get("updated_at") or _now_ts()
+    conn.execute(
+        """
+        INSERT INTO delivery_state (
+            user_id, status, consecutive_send_count, active_overflow_session_id,
+            blocked_reason, last_user_message_at, last_warned_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            status = excluded.status,
+            consecutive_send_count = excluded.consecutive_send_count,
+            active_overflow_session_id = excluded.active_overflow_session_id,
+            blocked_reason = excluded.blocked_reason,
+            last_user_message_at = excluded.last_user_message_at,
+            last_warned_at = excluded.last_warned_at,
+            updated_at = excluded.updated_at
+    """,
+        (
+            payload["user_id"],
+            payload["status"],
+            payload["consecutive_send_count"],
+            payload["active_overflow_session_id"],
+            payload["blocked_reason"],
+            payload["last_user_message_at"],
+            payload["last_warned_at"],
+            payload["updated_at"],
+        ),
+    )
+    conn.commit()
+
+
+def get_delivery_state(user_id: str) -> dict:
+    with _lock:
+        return _fetch_state_unsafe(_get_conn(), user_id)
+
+
+def save_delivery_state(state: dict) -> dict:
     with _lock:
         conn = _get_conn()
-        conn.execute(
-            """
-            INSERT INTO delivery_state (
-                user_id, status, consecutive_send_count, active_overflow_session_id,
-                blocked_reason, last_user_message_at, last_warned_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                status = excluded.status,
-                consecutive_send_count = excluded.consecutive_send_count,
-                active_overflow_session_id = excluded.active_overflow_session_id,
-                blocked_reason = excluded.blocked_reason,
-                last_user_message_at = excluded.last_user_message_at,
-                last_warned_at = excluded.last_warned_at,
-                updated_at = excluded.updated_at
-        """,
-            (
-                user_id,
-                payload["status"],
-                payload["consecutive_send_count"],
-                payload["active_overflow_session_id"],
-                payload["blocked_reason"],
-                payload["last_user_message_at"],
-                payload["last_warned_at"],
-                payload["updated_at"],
-            ),
-        )
-        conn.commit()
-    return get_delivery_state(user_id)
+        _persist_state_unsafe(conn, state)
+        return _fetch_state_unsafe(conn, state["user_id"])
 
 
 def update_delivery_state(user_id: str, **fields) -> dict:
-    state = get_delivery_state(user_id)
-    state.update(fields)
-    state["user_id"] = user_id
-    if "updated_at" not in fields:
-        state["updated_at"] = _now_ts()
-    return save_delivery_state(state)
+    """原子地读取、合并字段、写回投递状态，全程持锁。"""
+    with _lock:
+        conn = _get_conn()
+        state = _fetch_state_unsafe(conn, user_id)
+        state.update(fields)
+        state["user_id"] = user_id
+        if "updated_at" not in fields:
+            state["updated_at"] = _now_ts()
+        _persist_state_unsafe(conn, state)
+        return _fetch_state_unsafe(conn, user_id)
 
 
 def list_delivery_states() -> list[dict]:

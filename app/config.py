@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = os.environ.get("AI_CONFIG_FILE", "./data/ai_config.json")
 _config_lock = threading.Lock()  # 防止多线程并发写 JSON 文件撕裂
 
+_config_cache: dict | None = None
+_config_cache_at: float = 0.0
+_config_cache_file: str = ""  # 缓存对应的 CONFIG_FILE 路径，路径变化时自动失效
+_CONFIG_CACHE_TTL = 5.0  # 秒
+
 # 厂商预设：{provider_id: {name, base_url, models: [{id, name}]}}
 PROVIDERS = {
     "openai": {
@@ -82,8 +87,26 @@ DEFAULT_CONFIG = {
 }
 
 
+def _invalidate_config_cache():
+    global _config_cache, _config_cache_at, _config_cache_file
+    _config_cache = None
+    _config_cache_at = 0.0
+    _config_cache_file = ""
+
+
 def load_config() -> dict:
-    """加载 AI 配置，优先从文件读取，环境变量可覆盖"""
+    """加载 AI 配置，优先从文件读取，环境变量可覆盖（5s TTL 缓存）"""
+    global _config_cache, _config_cache_at, _config_cache_file
+    import time as _time
+
+    now = _time.monotonic()
+    if (
+        _config_cache is not None
+        and _config_cache_file == CONFIG_FILE
+        and now - _config_cache_at < _CONFIG_CACHE_TTL
+    ):
+        return _config_cache.copy()
+
     config = DEFAULT_CONFIG.copy()
     saved = {}
     if os.path.exists(CONFIG_FILE):
@@ -153,11 +176,15 @@ def load_config() -> dict:
     if needs_save:
         save_config(config)
 
+    _config_cache = config.copy()
+    _config_cache_at = _time.monotonic()
+    _config_cache_file = CONFIG_FILE
     return config
 
 
 def save_config(config: dict):
-    """持久化 AI 配置到文件（加锁防并发写撕裂）"""
+    """持久化 AI 配置到文件（加锁防并发写撕裂），同时清除缓存。"""
+    _invalidate_config_cache()
     with _config_lock:
         os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
         with open(CONFIG_FILE, "w") as f:

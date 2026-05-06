@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import mimetypes
+import time
 from urllib.parse import parse_qs
 
 import config as cfg
@@ -13,7 +14,7 @@ import db as msg_db
 import media as media_mod
 from version import __version__
 from webapp.auth import check_web_session, make_session_cookie
-from webapp.markdown_utils import markdown_to_plain, should_plainify_markdown
+from webapp.markdown_utils import apply_markdown_mode
 from webapp.request_utils import parse_multipart
 from webapp.webhook_parser import parse_webhook_payload
 
@@ -36,12 +37,6 @@ def _compose_title_text(title: str, text: str) -> str:
     return text
 
 
-def _maybe_plainify(text: str, *flags) -> str:
-    if any(should_plainify_markdown(flag) for flag in flags):
-        return markdown_to_plain(text)
-    return text
-
-
 def _multicast_send(ctx, to_str: str, text: str, *, source: str = "api", title: str = "") -> dict:
     targets = [item.strip() for item in to_str.split(",") if item.strip()]
     if not targets:
@@ -58,9 +53,7 @@ def _multicast_send(ctx, to_str: str, text: str, *, source: str = "api", title: 
         if result.get("ok"):
             success += 1
         if index < len(targets) - 1:
-            import time as _time
-
-            _time.sleep(0.5)
+            time.sleep(0.5)
 
     return {
         "ok": success > 0,
@@ -177,7 +170,7 @@ def handle_send_get(handler, ctx, params):
         handler._json_response({"ok": False, "error": "缺少 text 参数"}, 400)
         return
 
-    text = _maybe_plainify(
+    text = apply_markdown_mode(
         text,
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
@@ -202,7 +195,7 @@ def handle_push_get(handler, ctx, params):
         handler._json_response({"ok": False, "error": "需要 to 和 text 或 content 参数"}, 400)
         return
 
-    final_text = _maybe_plainify(
+    final_text = apply_markdown_mode(
         final_text,
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
@@ -277,7 +270,7 @@ def handle_send_post(handler, ctx, params, body):
         handler._json_response({"ok": False, "error": "缺少 text 参数"}, 400)
         return
 
-    text = _maybe_plainify(text, data.get("markdown"), data.get("markdown_mode"))
+    text = apply_markdown_mode(text, data.get("markdown"), data.get("markdown_mode"))
     result = _multicast_send(ctx, to, text, source="api", title=data.get("title", ""))
     handler._json_response(result, 200 if result.get("ok") else 400)
 
@@ -349,8 +342,9 @@ def handle_post_ai_config(handler, ctx, params, body):
 
 
 def handle_ag_inbox(handler, ctx, params, body):
-    messages = ctx.bridge.ag_inbox.copy()
-    ctx.bridge.ag_inbox.clear()
+    with ctx.bridge._ag_inbox_lock:
+        messages = ctx.bridge.ag_inbox
+        ctx.bridge.ag_inbox = []
     handler._json_response({"ok": True, "messages": messages})
 
 
@@ -372,30 +366,41 @@ def handle_push_post(handler, ctx, params, body):
 
     to = ""
     text = ""
+    title = ""
+    markdown = ""
+    markdown_mode = ""
     content_type = handler.headers.get("Content-Type", "")
     if content_type.startswith("application/json"):
         try:
             data = json.loads(body) if body else {}
             to = data.get("to", "")
             text = data.get("text", "") or data.get("content", "")
+            title = data.get("title", "")
+            markdown = data.get("markdown")
+            markdown_mode = data.get("markdown_mode")
         except Exception:
             pass
     else:
         form_data = parse_qs(body.decode("utf-8"))
         to = form_data.get("to", [""])[0]
         text = form_data.get("text", [""])[0] or form_data.get("content", [""])[0]
+        title = form_data.get("title", [""])[0]
+        markdown = form_data.get("markdown", [""])[0]
+        markdown_mode = form_data.get("markdown_mode", [""])[0]
 
     to = _pick_default_contact(ctx, to or params.get("to", [""])[0])
     text = text or params.get("text", [""])[0] or params.get("content", [""])[0]
-    title = params.get("title", [""])[0]
+    title = title or params.get("title", [""])[0]
     final_text = _compose_title_text(title, text)
 
     if not to or not final_text:
         handler._json_response({"ok": False, "error": "需要 to 和 text 或 content 参数"}, 400)
         return
 
-    final_text = _maybe_plainify(
+    final_text = apply_markdown_mode(
         final_text,
+        markdown,
+        markdown_mode,
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
@@ -427,6 +432,11 @@ def handle_webhook(handler, ctx, path, params, body):
         return
 
     text = parse_webhook_payload(data, schema)
+    text = apply_markdown_mode(
+        text,
+        params.get("markdown", [""])[0],
+        params.get("markdown_mode", [""])[0],
+    )
     if not text:
         handler._json_response({"ok": False, "error": "无法解析 Webhook 内容"}, 400)
         return

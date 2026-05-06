@@ -16,6 +16,7 @@ from datetime import datetime
 import requests
 
 import db
+from fmt import md_inline as _md_inline
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +85,18 @@ class DeliveryMixin:
     def _build_limit_warning(self, for_pull: bool = False) -> str:
         if for_pull:
             return (
-                "\n\n━━━━━━━━━━━━━━\n"
-                "⚠️【系统提醒】本次补拉已再次触发微信接收上限，剩余缓存消息已暂停发送\n"
-                "👉请回复任意内容后再次发送 /pull 继续拉取"
+                "\n\n---\n\n"
+                "## ⚠️ 系统提醒\n\n"
+                "- 本次补拉已再次触发微信接收上限\n"
+                "- 剩余缓存消息已暂停发送\n"
+                "- 请回复任意内容后再次发送 `/pull` 继续拉取"
             )
         return (
-            "\n\n━━━━━━━━━━━━━━\n"
-            "⚠️【系统提醒】bot已连续发送 10 条通知，已触发微信接收上限，后续消息无法发送\n"
-            "👉请回复任意内容解除限制恢复接收！"
+            "\n\n---\n\n"
+            "## ⚠️ 系统提醒\n\n"
+            "- Bot 已连续发送 10 条通知\n"
+            "- 已触发微信接收上限，后续消息将暂停发送\n"
+            "- 请回复任意内容解除限制并恢复接收"
         )
 
     # ── Overflow Session 管理 ──
@@ -280,6 +285,8 @@ class DeliveryMixin:
         record_timeline: bool = True,
         delivery_stage_on_success: str = "direct",
         extra_meta: dict | None = None,
+        image_data: bytes | None = None,
+        media_name: str | None = None,
     ) -> dict:
         with self._outbound_lock:
             now_ts = int(time.time())
@@ -294,6 +301,7 @@ class DeliveryMixin:
                         reason="window_24h",
                         source=source,
                         title=title,
+                        media_name=media_name,
                     )
                 return {"ok": False, "error": "已超过 24 小时未收到用户消息，请等待对方回复后再继续发送。"}
 
@@ -309,6 +317,7 @@ class DeliveryMixin:
                         reason="quota_10",
                         source=source,
                         title=title,
+                        media_name=media_name,
                     )
                 return {"ok": False, "error": "已连续发送 10 条消息，请等待用户回复后再继续发送。"}
 
@@ -318,7 +327,9 @@ class DeliveryMixin:
 
             if next_count == MAX_CONSECUTIVE_SENDS:
                 warning_appended = True
-                final_text = text + self._build_limit_warning(for_pull=not rotate_session_on_warn)
+                # 图片消息无法拼接文字告警，仅建立 overflow session
+                if image_data is None:
+                    final_text = text + self._build_limit_warning(for_pull=not rotate_session_on_warn)
                 if rotate_session_on_warn:
                     session = self._start_new_overflow_session(user_id, "quota_10")
                     active_session_id = session["id"]
@@ -327,7 +338,10 @@ class DeliveryMixin:
                     active_session_id = session["id"] if session else active_session_id
 
             try:
-                result = self.client.send_text(user_id, final_text, context_token)
+                if image_data is not None:
+                    result = self.client.send_image(user_id, image_data, context_token)
+                else:
+                    result = self.client.send_text(user_id, final_text, context_token)
             except Exception as exc:
                 logger.error("发送消息失败(但可能已送达): %s", exc)
                 if allow_buffer and self._is_window_limit_error(exc):
@@ -345,6 +359,7 @@ class DeliveryMixin:
                         reason=limit_reason,
                         source=source,
                         title=title,
+                        media_name=media_name,
                         extra_meta={"limit_warning": True} if warning_appended else None,
                     )
                 if self._is_delivery_uncertain_error(exc):
@@ -364,6 +379,7 @@ class DeliveryMixin:
                             overflow_session_id=active_session_id if warning_appended else None,
                             source=source,
                             title=title,
+                            media_name=media_name,
                             extra_meta=resolved_meta,
                         )
                     status, blocked_reason, saved_session_id = self._next_status_after_send(
@@ -402,6 +418,7 @@ class DeliveryMixin:
                     overflow_session_id=active_session_id if warning_appended else None,
                     source=source,
                     title=title,
+                    media_name=media_name,
                     extra_meta=resolved_meta or None,
                 )
 
@@ -470,13 +487,19 @@ class DeliveryMixin:
     def _format_pending_message(self, pending: dict) -> str:
         dt = datetime.fromtimestamp(pending["created_at"])
         ts = f"{dt.month}-{dt.day} {dt:%H:%M:%S}"
-        header = f"[{ts}][{pending.get('source') or 'system'}][{pending.get('blocked_reason') or 'quota_10'}]"
-        parts = [header]
+        parts = [
+            "---",
+            "### 缓存消息",
+            "",
+            f"- **时间**：{_md_inline(ts)}",
+            f"- **来源**：{_md_inline(pending.get('source') or 'system')}",
+            f"- **原因**：{_md_inline(pending.get('blocked_reason') or 'quota_10')}",
+        ]
         if pending.get("title"):
-            parts.append(pending["title"])
+            parts.extend(["", f"**标题**：{pending['title']}"])
         if pending.get("media") and "[图片:" not in (pending.get("content") or ""):
-            parts.append(f"[图片:{pending['media']}]")
-        parts.append(pending["content"])
+            parts.extend(["", f"> 图片已缓存，文件：{_md_inline(pending['media'])}"])
+        parts.extend(["", pending["content"]])
         return "\n".join(part for part in parts if part)
 
     def _build_pull_chunks(self, pending_messages: list[dict]) -> list[dict]:
@@ -522,7 +545,7 @@ class DeliveryMixin:
         summary = self.get_delivery_summary(user_id)
         session_id = summary.get("active_overflow_session_id")
         if not session_id or summary.get("pending_count", 0) <= 0:
-            return {"ok": False, "empty": True, "message": "📭 当前没有待拉取的缓存消息。"}
+            return {"ok": False, "empty": True, "message": "## 📭 缓存消息\n\n- 当前没有待拉取的缓存消息"}
 
         pending_messages = db.get_pending_messages(session_id)
         if not pending_messages:
@@ -533,7 +556,7 @@ class DeliveryMixin:
                 blocked_reason=None,
                 active_overflow_session_id=None,
             )
-            return {"ok": False, "empty": True, "message": "📭 当前没有待拉取的缓存消息。"}
+            return {"ok": False, "empty": True, "message": "## 📭 缓存消息\n\n- 当前没有待拉取的缓存消息"}
 
         chunks = self._build_pull_chunks(pending_messages)
         contact_name = self._contact_name(user_id)

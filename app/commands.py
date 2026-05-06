@@ -13,10 +13,21 @@ from datetime import datetime
 
 import config as cfg
 from delivery import MAX_CONSECUTIVE_SENDS
+from fmt import md_inline as _md_inline
 
 logger = logging.getLogger(__name__)
 
 MAGIC_WEBHOOK_COMMAND_PREFIX = "__MAGIC_WEBHOOK_COMMAND__:"
+
+
+def _format_minutes(minutes: int) -> str:
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours and mins:
+        return f"{hours}小时{mins}分钟"
+    if hours:
+        return f"{hours}小时"
+    return f"{mins}分钟"
 
 
 class CommandMixin:
@@ -27,15 +38,19 @@ class CommandMixin:
         cmd = text.strip().lower()
         if cmd in ("/help", "/帮助"):
             lines = [
-                "📋 可用指令：",
-                "/help - 显示帮助",
-                "/status - 查看 Bot 状态",
-                "/pull - 拉取缓存中的未送达消息",
-                "/uid - 查看自己的用户ID",
-                "/retry - 重新生成AI回复",
-                "/keepalive [on|off] - 开启或关闭23h断联提醒",
-                "/ai [on|off] - 开启或关闭AI助手",
-                "/clear - 清除 AI 对话历史",
+                "## 📋 可用指令",
+                "",
+                "- `/help`：显示帮助菜单",
+                "- `/status`：查看 Bot 状态、发送额度和配置",
+                "- `/pull`：拉取缓存中的未送达消息",
+                "- `/uid`：查看自己的用户 ID",
+                "- `/retry`：重新生成上一条 AI 回复",
+                "- `/keepalive on`：开启 23h 通道提醒",
+                "- `/keepalive off`：关闭 23h 通道提醒",
+                "- `/ai on`：开启 AI 助手",
+                "- `/ai off`：关闭 AI 助手",
+                "- `/ai`：查看 AI 状态和今日用量",
+                "- `/clear`：清除 AI 对话历史",
             ]
             return "\n".join(lines)
 
@@ -51,36 +66,36 @@ class CommandMixin:
 
             keepalive = ai_config.get("keepalive_remind_minutes", 1380)
             if keepalive > 0:
-                k_hours = keepalive // 60
-                k_mins = keepalive % 60
-                time_fmt = f"{k_hours}时" if k_mins == 0 else f"{k_hours}时{k_mins}分"
-                notify_enabled = f"✅开启 ({time_fmt})"
+                notify_enabled = f"✅ 开启（{_format_minutes(keepalive)}）"
             else:
-                notify_enabled = "❌关闭"
+                notify_enabled = "❌ 关闭"
 
             webhook_cfg = self._get_webhook_config()
             if webhook_cfg["enabled"]:
                 mode_text = "全部消息" if webhook_cfg["mode"] == "all_messages" else "仅未知命令"
-                webhook_enabled = f"✅启用 ({mode_text})"
+                webhook_enabled = f"✅ 启用（{mode_text}）"
             elif webhook_cfg["url"]:
-                webhook_enabled = "⏸️已配置未启用"
+                webhook_enabled = "⏸️ 已配置未启用"
             else:
-                webhook_enabled = "❌未配置"
-            api_key_status = "✅已填" if ai_config.get("api_key") else "❌空缺"
+                webhook_enabled = "❌ 未配置"
+            ai_status = "✅ 已启用" if ai_config.get("enabled") else "❌ 未启用"
+            api_key_status = "✅ 已填" if ai_config.get("api_key") else "❌ 空缺"
 
             return (
-                f"🤖 WeChat Bridge\n"
-                f"⏳ 运行: {uptime_str}\n"
-                f"📊 额度: 已连续发送 {summary['consecutive_send_count']}/{MAX_CONSECUTIVE_SENDS} 条\n"
-                f"📬 缓存: {summary['pending_count']} 条\n"
-                f"🚦 状态: {summary['status']}\n"
-                f"🧱 原因: {summary['blocked_reason_text']}\n"
-                f"⏰ 保活提醒: {notify_enabled}\n"
-                f"🔗 Webhook: {webhook_enabled}\n"
-                f"---\n"
-                f"🤖 AI: {'✅已启用' if ai_config.get('enabled') else '❌未启用'}\n"
-                f"🧠 模型: {ai_config.get('provider', 'N/A')} · {ai_config.get('model', 'N/A')}\n"
-                f"🔑 API Key: {api_key_status}"
+                "## 🤖 WeChat Bridge\n\n"
+                "### 运行状态\n\n"
+                f"- **运行时长**：{uptime_str}\n"
+                f"- **发送额度**：{summary['consecutive_send_count']}/{MAX_CONSECUTIVE_SENDS} 条\n"
+                f"- **缓存消息**：{summary['pending_count']} 条\n"
+                f"- **投递状态**：{_md_inline(summary['status'])}\n"
+                f"- **缓存原因**：{summary['blocked_reason_text']}\n\n"
+                "### 功能配置\n\n"
+                f"- **保活提醒**：{notify_enabled}\n"
+                f"- **Webhook**：{webhook_enabled}\n\n"
+                "### AI 配置\n\n"
+                f"- **状态**：{ai_status}\n"
+                f"- **模型**：{_md_inline(ai_config.get('provider', 'N/A'))} / {_md_inline(ai_config.get('model', 'N/A'))}\n"
+                f"- **API Key**：{api_key_status}"
             )
 
         if cmd in ("/pull",):
@@ -89,27 +104,27 @@ class CommandMixin:
         if cmd in ("/ai",):
             ai_config = cfg.load_config()
             if not ai_config.get("enabled"):
-                return "🤖 AI 未启用。请在 Web 管理面板中开启。"
+                return "## 🤖 AI 助手\n\n- **状态**：❌ 未启用\n- **操作**：请在 Web 管理面板中开启并配置 API Key"
             today = datetime.now().strftime("%Y-%m-%d")
             usage = ai_config.get("usage", {}).get(today, {})
             return (
-                f"🤖 AI 状态\n"
-                f"厂商: {ai_config['provider']}\n"
-                f"模型: {ai_config['model']}\n"
-                f"今日用量: {usage.get('tokens', 0)} tokens / {usage.get('requests', 0)} 次"
+                "## 🤖 AI 状态\n\n"
+                f"- **厂商**：{_md_inline(ai_config.get('provider', 'N/A'))}\n"
+                f"- **模型**：{_md_inline(ai_config.get('model', 'N/A'))}\n"
+                f"- **今日用量**：{usage.get('tokens', 0)} tokens / {usage.get('requests', 0)} 次"
             )
 
         if cmd in ("/clear", "/清除"):
             if self.ai_manager:
                 self.ai_manager.clear_history(user_id)
-            return "✅ 对话历史已清除"
+            return "## ✅ 清除完成\n\n- AI 对话历史已清除"
 
         if cmd in ("/uid",):
-            return f"🆔 您的用户ID:\n{user_id}"
+            return f"## 🆔 用户 ID\n\n{_md_inline(user_id)}"
 
         if cmd in ("/retry", "/重试"):
             if not self.ai_manager:
-                return "🤖 AI 未启用"
+                return "## 🤖 AI 助手\n\n- **状态**：❌ 未启用"
             last_text = None
             for message in reversed(self.recent_messages):
                 if message.get("user_id") == user_id and message.get("type") == "recv":
@@ -118,7 +133,7 @@ class CommandMixin:
                         last_text = candidate
                         break
             if not last_text:
-                return "❌ 未找到您最近的有效对话记录"
+                return "## ❌ 重试失败\n\n- 未找到最近的有效对话记录"
             return f"__MAGIC_RETRY__:{last_text}"
 
         if cmd.startswith("/keepalive ") or cmd.startswith("/保活 "):
@@ -129,12 +144,12 @@ class CommandMixin:
                 if action in ("on", "1", "true", "开启"):
                     current["keepalive_remind_minutes"] = 1380
                     cfg.save_config(current)
-                    return "✅ 保活提醒已开启 (距最后发言23h时提醒)"
+                    return "## ✅ 保活提醒\n\n- **状态**：已开启\n- **提醒时间**：距最后发言 `23小时` 时提醒"
                 if action in ("off", "0", "false", "关闭"):
                     current["keepalive_remind_minutes"] = 0
                     cfg.save_config(current)
-                    return "❌ 保活提醒已关闭"
-            return "❓ 用法: /keepalive [on|off]"
+                    return "## ❌ 保活提醒\n\n- **状态**：已关闭"
+            return "## ❓ 用法\n\n- 开启：`/keepalive on`\n- 关闭：`/keepalive off`"
 
         if cmd.startswith("/ai ") or cmd.startswith("/ai状态 "):
             parts = cmd.split()
@@ -144,16 +159,16 @@ class CommandMixin:
                 if action in ("on", "1", "true", "开启"):
                     current["enabled"] = True
                     cfg.save_config(current)
-                    msg = "✅ AI 助手已开启！"
+                    msg = "## ✅ AI 助手\n\n- **状态**：已开启"
                     if not current.get("api_key"):
-                        msg += "\n⚠️ 注意：尚未配置 API Key，将无法正常回复，请登录 Web 控制台配置。"
+                        msg += "\n- **提醒**：尚未配置 `API Key`，请登录 Web 控制台配置。"
                     return msg
                 if action in ("off", "0", "false", "关闭"):
                     current["enabled"] = False
                     cfg.save_config(current)
-                    return "❌ AI 助手已关闭"
-            return "❓ AI状态见/status，开关请基于网页，或者: /ai [on|off]"
+                    return "## ❌ AI 助手\n\n- **状态**：已关闭"
+            return "## ❓ 用法\n\n- 查看状态：`/ai`\n- 开启：`/ai on`\n- 关闭：`/ai off`"
 
         if self._should_forward_unknown_command():
             return f"{MAGIC_WEBHOOK_COMMAND_PREFIX}{text}"
-        return f"❓ 未知指令: {text}\n发送 /help 查看可用指令"
+        return f"## ❓ 未知指令\n\n- **收到**：{_md_inline(text)}\n- 发送 `/help` 查看可用指令"

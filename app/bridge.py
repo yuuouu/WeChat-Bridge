@@ -55,11 +55,13 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self.activity_tracker: dict[str, dict] = {}
         self.recent_messages = deque(maxlen=50)
         self.ag_inbox = []
+        self._ag_inbox_lock = threading.Lock()
         self._running = False
         self._poll_thread: threading.Thread | None = None
         self.ai_manager = None
         self._consecutive_send_count: dict[str, dict] = {}
         self._outbound_lock = threading.Lock()
+        self._contacts_lock = threading.Lock()
         self._setup_data_dir()
         self._load_contacts()
 
@@ -106,17 +108,18 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 pass
 
     def _save_contacts(self):
-        os.makedirs(self._data_dir, exist_ok=True)
-        with open(self._contacts_file, "w", encoding="utf-8") as fh:
-            json.dump(self.contacts, fh, ensure_ascii=False, indent=2)
+        with self._contacts_lock:
+            os.makedirs(self._data_dir, exist_ok=True)
+            with open(self._contacts_file, "w", encoding="utf-8") as fh:
+                json.dump(self.contacts, fh, ensure_ascii=False, indent=2)
 
-        ctx_file = os.path.join(self._data_dir, "context_tokens.json")
-        with open(ctx_file, "w", encoding="utf-8") as fh:
-            json.dump(self.context_tokens, fh, ensure_ascii=False, indent=2)
+            ctx_file = os.path.join(self._data_dir, "context_tokens.json")
+            with open(ctx_file, "w", encoding="utf-8") as fh:
+                json.dump(self.context_tokens, fh, ensure_ascii=False, indent=2)
 
-        act_file = os.path.join(self._data_dir, "activity.json")
-        with open(act_file, "w", encoding="utf-8") as fh:
-            json.dump(self.activity_tracker, fh, ensure_ascii=False, indent=2)
+            act_file = os.path.join(self._data_dir, "activity.json")
+            with open(act_file, "w", encoding="utf-8") as fh:
+                json.dump(self.activity_tracker, fh, ensure_ascii=False, indent=2)
 
     def _update_contact(self, user_id: str, display_name: str = None):
         """从消息中积累联系人信息。"""
@@ -327,7 +330,8 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         )
 
         if text and not text.startswith("/"):
-            self.ag_inbox.append({"from": from_name, "text": text})
+            with self._ag_inbox_lock:
+                self.ag_inbox.append({"from": from_name, "text": text})
 
         if text.startswith("/"):
             cmd_reply = self._handle_command(text, from_user)
@@ -348,7 +352,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
 
                 def _async_retry_worker():
                     try:
-                        self.send(from_user, "🔄 正在为您重新生成回答...", source="system")
+                        self.send(from_user, "## 🔄 正在重试\n\n- 正在为您重新生成回答", source="system")
                         ai_reply = self.ai_manager.chat(from_user, retry_text) if self.ai_manager else ""
                         if ai_reply:
                             result = self.send(from_user, ai_reply, source="ai")
@@ -447,93 +451,19 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         if not user_id:
             return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
 
-        context_token = self.get_context_token(user_id)
-        contact_name = self._contact_name(user_id, to)
         filename = self._save_outbound_image(file_data)
-        image_text = f"[图片:{filename}]"
-
-        with self._outbound_lock:
-            now_ts = int(time.time())
-            state = self._get_delivery_state(user_id)
-
-            if self._is_window_expired(user_id, state, now_ts):
-                return self._buffer_message(
-                    user_id=user_id,
-                    contact_name=contact_name,
-                    text=image_text,
-                    reason="window_24h",
-                    source="image",
-                    media_name=filename,
-                )
-
-            current_count = int(state.get("consecutive_send_count") or 0)
-            active_session_id = state.get("active_overflow_session_id")
-            if current_count >= MAX_CONSECUTIVE_SENDS:
-                return self._buffer_message(
-                    user_id=user_id,
-                    contact_name=contact_name,
-                    text=image_text,
-                    reason="quota_10",
-                    source="image",
-                    media_name=filename,
-                )
-
-            next_count = current_count + 1
-            warning_session_id = active_session_id
-            if next_count == MAX_CONSECUTIVE_SENDS:
-                session = self._start_new_overflow_session(user_id, "quota_10")
-                warning_session_id = session["id"]
-
-            try:
-                result = self.client.send_image(user_id, file_data, context_token)
-            except Exception as exc:
-                logger.error("发送图片失败: %s", exc)
-                if self._is_window_limit_error(exc):
-                    limit_reason = self._resolve_limit_error_reason(
-                        user_id=user_id,
-                        state=state,
-                        now_ts=now_ts,
-                        next_count=next_count,
-                        warning_appended=next_count == MAX_CONSECUTIVE_SENDS,
-                    )
-                    return self._buffer_message(
-                        user_id=user_id,
-                        contact_name=contact_name,
-                        text=image_text,
-                        reason=limit_reason,
-                        source="image",
-                        media_name=filename,
-                    )
-                return {"ok": False, "error": str(exc)}
-
-            self._record_outbound_message(
-                contact_name=contact_name,
-                user_id=user_id,
-                text=image_text,
-                msg_prefix="s",
-                delivery_stage="direct",
-                overflow_session_id=warning_session_id if next_count == MAX_CONSECUTIVE_SENDS else None,
-                source="image",
-                media_name=filename,
-                extra_meta={"blocked_reason": "quota_10"} if next_count == MAX_CONSECUTIVE_SENDS else None,
-            )
-
-            next_status = "WARNED" if next_count == MAX_CONSECUTIVE_SENDS else "NORMAL"
-            next_blocked_reason = "quota_10" if next_count == MAX_CONSECUTIVE_SENDS else None
-            next_session_id = warning_session_id if next_count == MAX_CONSECUTIVE_SENDS else None
-            self._set_delivery_state(
-                user_id,
-                status=next_status,
-                consecutive_send_count=next_count,
-                blocked_reason=next_blocked_reason,
-                active_overflow_session_id=next_session_id,
-            )
-            return {
-                "ok": True,
-                "result": result,
-                "warning": next_count == MAX_CONSECUTIVE_SENDS,
-                "overflow_session_id": next_session_id,
-            }
+        return self._send_resolved(
+            user_id=user_id,
+            contact_name=self._contact_name(user_id, to),
+            text=f"[图片:{filename}]",
+            context_token=self.get_context_token(user_id),
+            source="image",
+            allow_buffer=True,
+            rotate_session_on_warn=True,
+            record_timeline=True,
+            image_data=file_data,
+            media_name=filename,
+        )
 
     # ── 长轮询主循环 ──
 
