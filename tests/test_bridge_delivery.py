@@ -425,10 +425,7 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(pending["blocked_reason"], "quota_10")
 
         messages = db.get_messages(limit=20)
-        buffered_img = [
-            m for m in messages
-            if m["delivery_stage"] == "buffered" and m["media"]
-        ]
+        buffered_img = [m for m in messages if m["delivery_stage"] == "buffered" and m["media"]]
         self.assertEqual(len(buffered_img), 1)
 
     def test_all_messages_mode_forwards_regular_messages(self):

@@ -100,11 +100,7 @@ def load_config() -> dict:
     import time as _time
 
     now = _time.monotonic()
-    if (
-        _config_cache is not None
-        and _config_cache_file == CONFIG_FILE
-        and now - _config_cache_at < _CONFIG_CACHE_TTL
-    ):
+    if _config_cache is not None and _config_cache_file == CONFIG_FILE and now - _config_cache_at < _CONFIG_CACHE_TTL:
         return _config_cache.copy()
 
     config = DEFAULT_CONFIG.copy()
