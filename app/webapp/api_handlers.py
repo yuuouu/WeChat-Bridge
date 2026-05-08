@@ -145,6 +145,13 @@ def handle_qr_status(handler, ctx, params):
             {
                 "status": status_data.get("status"),
                 "logged_in": ctx.client.logged_in,
+                "message": {
+                    "wait": "等待扫码",
+                    "scaned": "已扫码，请在微信确认",
+                    "scaned_but_redirect": "正在重定向",
+                    "expired": "二维码已过期",
+                    "confirmed": "登录成功",
+                }.get(status_data.get("status", ""), ""),
             }
         )
     except Exception as exc:

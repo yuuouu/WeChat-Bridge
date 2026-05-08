@@ -1,0 +1,40 @@
+#!/bin/sh
+
+generate_token() {
+	if command -v hexdump >/dev/null 2>&1; then
+		hexdump -n 16 -e '16/1 "%02x"' /dev/urandom
+	elif command -v od >/dev/null 2>&1; then
+		od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+	else
+		(date +%s; cat /proc/sys/kernel/random/uuid 2>/dev/null) | md5sum | cut -c1-32
+	fi
+}
+
+ensure_section() {
+	if ! uci -q get wechat-bridge.config >/dev/null 2>&1; then
+		uci set wechat-bridge.config='wechat-bridge'
+	fi
+}
+
+set_default() {
+	local name="$1"
+	local value="$2"
+
+	if [ -z "$(uci -q get "wechat-bridge.config.${name}")" ]; then
+		uci set "wechat-bridge.config.${name}=${value}"
+	fi
+}
+
+ensure_section
+set_default enabled 0
+set_default port 5200
+set_default image_name ghcr.io/yuuouu/wechat-bridge
+set_default image_tag latest
+set_default markdown_mode markdown
+
+if [ -z "$(uci -q get wechat-bridge.config.api_token)" ]; then
+	uci set "wechat-bridge.config.api_token=$(generate_token)"
+fi
+
+uci commit wechat-bridge
+exit 0

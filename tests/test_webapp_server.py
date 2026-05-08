@@ -17,6 +17,7 @@ if str(APP_ROOT) not in sys.path:
 install_crypto_stub()
 sys.modules.setdefault("qrcode", types.ModuleType("qrcode"))
 import config as cfg
+from webapp.api_handlers import handle_qr_status
 from webapp.context import WebAppContext
 from webapp.server import BridgeHandler, ThreadingHTTPServer
 
@@ -35,6 +36,9 @@ class _FakeClient:
         self.polled_qrcode = qrcode
         return self.qr_status_response
 
+    def get_bot_id(self):
+        return self.bot_id
+
 
 class _FakeBridge:
     def __init__(self):
@@ -44,6 +48,10 @@ class _FakeBridge:
         self.ag_inbox = []
         self.sent = []
         self.ai_manager = None
+        self.recent_messages = ["stale-message"]
+        self._consecutive_send_count = {"uid-1": {"count": 1}}
+        self.setup_data_dir_called = False
+        self.load_contacts_called = False
 
     def send(self, to, text, source="api", title=""):
         self.sent.append((to, text, source, title))
@@ -71,6 +79,80 @@ class _FakeBridge:
                 "active_overflow_session_id": None,
             }
         }
+
+    def _setup_data_dir(self):
+        self.setup_data_dir_called = True
+
+    def _load_contacts(self):
+        self.load_contacts_called = True
+
+
+class _JsonHandler:
+    def __init__(self):
+        self.status = None
+        self.payload = None
+
+    def _json_response(self, payload, status=200):
+        self.status = status
+        self.payload = payload
+
+
+class QRStatusHandlerUnitTests(unittest.TestCase):
+    def setUp(self):
+        self.client = _FakeClient(logged_in=True)
+        self.bridge = _FakeBridge()
+        self.context = WebAppContext(client=self.client, bridge=self.bridge, api_token="secret-token")
+        self.handler = _JsonHandler()
+
+    def _call(self, qrcode="qr-test"):
+        handle_qr_status(self.handler, self.context, {"qrcode": [qrcode]})
+        return self.handler.status, self.handler.payload
+
+    def test_scaned_qr_status_returns_message(self):
+        self.client.qr_status_response = {"status": "scaned"}
+
+        status, data = self._call("qr-scaned")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "scaned")
+        self.assertEqual(data["message"], "已扫码，请在微信确认")
+        self.assertEqual(self.client.polled_qrcode, "qr-scaned")
+
+    def test_redirect_qr_status_returns_message(self):
+        self.client.qr_status_response = {"status": "scaned_but_redirect"}
+
+        status, data = self._call("qr-redirect")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "scaned_but_redirect")
+        self.assertEqual(data["message"], "正在重定向")
+
+    def test_expired_qr_status_clears_matching_qr_cache(self):
+        self.context.qr_cache.data = {"qrcode": "qr-expired", "qrcode_img_content": "https://example.com/qr"}
+        self.context.qr_cache.updated_at = 123.0
+        self.client.qr_status_response = {"status": "expired"}
+
+        status, data = self._call("qr-expired")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "expired")
+        self.assertEqual(data["message"], "二维码已过期")
+        self.assertIsNone(self.context.qr_cache.data)
+        self.assertEqual(self.context.qr_cache.updated_at, 0.0)
+
+    def test_confirmed_qr_status_refreshes_bridge_state_and_returns_message(self):
+        self.client.qr_status_response = {"status": "confirmed"}
+
+        status, data = self._call("qr-confirmed")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "confirmed")
+        self.assertTrue(data["logged_in"])
+        self.assertEqual(data["message"], "登录成功")
+        self.assertTrue(self.bridge.setup_data_dir_called)
+        self.assertTrue(self.bridge.load_contacts_called)
+        self.assertEqual(self.bridge.recent_messages, [])
+        self.assertEqual(self.bridge._consecutive_send_count, {})
 
 
 class WebAppServerTests(unittest.TestCase):
@@ -227,8 +309,45 @@ class WebAppServerTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         data = json.loads(body)
         self.assertEqual(data["status"], "expired")
+        self.assertEqual(data["message"], "二维码已过期")
         self.assertIsNone(self.context.qr_cache.data)
         self.assertEqual(self.context.qr_cache.updated_at, 0.0)
+
+    def test_scaned_qr_status_returns_message(self):
+        self.client.qr_status_response = {"status": "scaned"}
+
+        status, _, body = self._request("/api/qr_status?qrcode=qr-scaned")
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["status"], "scaned")
+        self.assertEqual(data["message"], "已扫码，请在微信确认")
+        self.assertEqual(self.client.polled_qrcode, "qr-scaned")
+
+    def test_redirect_qr_status_returns_message(self):
+        self.client.qr_status_response = {"status": "scaned_but_redirect"}
+
+        status, _, body = self._request("/api/qr_status?qrcode=qr-redirect")
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["status"], "scaned_but_redirect")
+        self.assertEqual(data["message"], "正在重定向")
+
+    def test_confirmed_qr_status_refreshes_bridge_state_and_returns_message(self):
+        self.client.qr_status_response = {"status": "confirmed"}
+
+        status, _, body = self._request("/api/qr_status?qrcode=qr-confirmed")
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["status"], "confirmed")
+        self.assertTrue(data["logged_in"])
+        self.assertEqual(data["message"], "登录成功")
+        self.assertTrue(self.bridge.setup_data_dir_called)
+        self.assertTrue(self.bridge.load_contacts_called)
+        self.assertEqual(self.bridge.recent_messages, [])
+        self.assertEqual(self.bridge._consecutive_send_count, {})
 
 
 if __name__ == "__main__":

@@ -16,9 +16,25 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+FIXED_BASE_URL = "https://ilinkai.weixin.qq.com"
 BASE_URL = "https://ilinkai.weixin.qq.com"
-CHANNEL_VERSION = "1.0.2"
+ILINK_CHANNEL_VERSION = "2.1.7"
+ILINK_APP_ID = "bot"
+ILINK_APP_CLIENT_VERSION = 131335
 TOKEN_FILE = os.environ.get("TOKEN_FILE", "./data/token.json")
+
+# UploadMediaType（对应 iLink proto GetUploadUrlReq.media_type）
+UPLOAD_MEDIA_TYPE_IMAGE = 1
+UPLOAD_MEDIA_TYPE_VIDEO = 2
+UPLOAD_MEDIA_TYPE_FILE = 3
+UPLOAD_MEDIA_TYPE_VOICE = 4
+
+# MessageItemType（对应 iLink proto MessageItem.type，与上传 media_type 含义不同）
+MESSAGE_ITEM_TYPE_TEXT = 1
+MESSAGE_ITEM_TYPE_IMAGE = 2
+MESSAGE_ITEM_TYPE_VOICE = 3
+MESSAGE_ITEM_TYPE_FILE = 4
+MESSAGE_ITEM_TYPE_VIDEO = 5
 
 
 def _random_uin() -> str:
@@ -28,16 +44,33 @@ def _random_uin() -> str:
     return base64.b64encode(str(rand_uint32).encode()).decode()
 
 
-def _headers(bot_token: str = None) -> dict:
-    """构造 iLink 标准请求头"""
+def _get_headers() -> dict:
+    """构造 QR GET 请求专用 headers。"""
+    return {
+        "iLink-App-Id": ILINK_APP_ID,
+        "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
+    }
+
+
+def _json_headers(bot_token: str | None = None) -> dict:
+    """构造 iLink JSON POST 请求头。"""
     h = {
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
         "X-WECHAT-UIN": _random_uin(),
+        "iLink-App-Id": ILINK_APP_ID,
+        "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
     if bot_token:
         h["Authorization"] = f"Bearer {bot_token}"
     return h
+
+
+_headers = _json_headers
+
+
+def _base_info() -> dict:
+    return {"channel_version": ILINK_CHANNEL_VERSION}
 
 
 class ILinkClient:
@@ -47,7 +80,9 @@ class ILinkClient:
         self.bot_token: str | None = None
         self.base_url: str = BASE_URL
         self.bot_id: str | None = None
+        self.user_id: str | None = None
         self.get_updates_buf: str = ""
+        self._login_poll_base_url: str = FIXED_BASE_URL
         self._session = requests.Session()
         self._load_token()
 
@@ -73,6 +108,27 @@ class ILinkClient:
     def logged_in(self) -> bool:
         return self.bot_token is not None
 
+    def _post_json(
+        self,
+        path: str,
+        payload: dict,
+        *,
+        token: str | None = None,
+        base_url: str | None = None,
+        timeout: int = 15,
+    ) -> dict:
+        """POST JSON 到 iLink API，并统一注入 base_info。"""
+        url = f"{base_url or self.base_url}/{path.lstrip('/')}"
+        body = {**payload, "base_info": _base_info()}
+        resp = self._session.post(
+            url,
+            headers=_json_headers(token),
+            json=body,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ── Token 持久化 ──
 
     def _load_token(self):
@@ -84,6 +140,7 @@ class ILinkClient:
                 self.bot_token = data.get("bot_token")
                 self.base_url = data.get("base_url", BASE_URL)
                 self.bot_id = data.get("bot_id") or self._extract_bot_id(self.bot_token)
+                self.user_id = data.get("user_id")
                 self.get_updates_buf = data.get("get_updates_buf", "")
                 if self.bot_token:
                     logger.info("已从文件恢复登录态: bot_id=%s", self.bot_id)
@@ -100,6 +157,7 @@ class ILinkClient:
                     "base_url": self.base_url,
                     "bot_id": self.bot_id,
                     "get_updates_buf": self.get_updates_buf,
+                    "user_id": self.user_id,
                 },
                 f,
                 indent=2,
@@ -109,7 +167,9 @@ class ILinkClient:
         """清除登录态"""
         self.bot_token = None
         self.bot_id = None
+        self.user_id = None
         self.get_updates_buf = ""
+        self._login_poll_base_url = FIXED_BASE_URL
         if os.path.exists(TOKEN_FILE):
             os.remove(TOKEN_FILE)
         logger.info("登录态已清除")
@@ -122,9 +182,9 @@ class ILinkClient:
         返回: {"qrcode": "xxx", "qrcode_img_content": "base64图片数据", "url": "扫码链接"}
         """
         resp = self._session.get(
-            f"{BASE_URL}/ilink/bot/get_bot_qrcode",
+            f"{FIXED_BASE_URL}/ilink/bot/get_bot_qrcode",
             params={"bot_type": "3"},
-            headers=_headers(),
+            headers=_get_headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -135,21 +195,33 @@ class ILinkClient:
     def poll_qrcode_status(self, qrcode: str) -> dict:
         """
         轮询扫码状态
-        返回: {"status": "waiting|scanned|confirmed|expired", "bot_token": "...", "baseurl": "..."}
+        返回: {"status": "wait|scaned|confirmed|expired|scaned_but_redirect", ...}
         """
         resp = self._session.get(
-            f"{BASE_URL}/ilink/bot/get_qrcode_status",
+            f"{self._login_poll_base_url}/ilink/bot/get_qrcode_status",
             params={"qrcode": qrcode},
-            headers=_headers(),
-            timeout=60,  # 长轮询可能 hold 较久
+            headers=_get_headers(),
+            timeout=45,  # 35s long-poll + 余量
         )
         resp.raise_for_status()
         data = resp.json()
 
-        if data.get("status") == "confirmed":
+        status = data.get("status")
+        if status == "scaned_but_redirect":
+            redirect_host = data.get("redirect_host")
+            if redirect_host:
+                self._login_poll_base_url = f"https://{redirect_host}"
+        elif status == "expired":
+            self._login_poll_base_url = FIXED_BASE_URL
+        elif status == "confirmed":
+            ilink_bot_id = data.get("ilink_bot_id")
+            if not ilink_bot_id:
+                raise RuntimeError("登录失败：服务器未返回 ilink_bot_id")
             self.bot_token = data["bot_token"]
-            self.base_url = data.get("baseurl", BASE_URL)
-            self.bot_id = data.get("bot_id") or self._extract_bot_id(self.bot_token)
+            self.base_url = data.get("baseurl") or BASE_URL
+            self.bot_id = ilink_bot_id
+            self.user_id = data.get("ilink_user_id")
+            self._login_poll_base_url = FIXED_BASE_URL
             self._save_token()
             logger.info("扫码登录成功! bot_id=%s", self.bot_id)
 
@@ -166,17 +238,12 @@ class ILinkClient:
             raise RuntimeError("未登录，请先扫码")
 
         try:
-            resp = self._session.post(
-                f"{self.base_url}/ilink/bot/getupdates",
-                headers=_headers(self.bot_token),
-                json={
-                    "get_updates_buf": self.get_updates_buf,
-                    "base_info": {"channel_version": CHANNEL_VERSION},
-                },
+            data = self._post_json(
+                "ilink/bot/getupdates",
+                {"get_updates_buf": self.get_updates_buf},
+                token=self.bot_token,
                 timeout=timeout + 10,  # 比服务器 hold 时间多留一点
             )
-            resp.raise_for_status()
-            data = resp.json()
 
             ret = data.get("ret", 0)
             errcode = data.get("errcode", 0)
@@ -223,19 +290,16 @@ class ILinkClient:
                 "message_type": 2,  # BOT 发出
                 "message_state": 2,  # FINISH（完整消息）
                 "context_token": context_token,
-                "item_list": [{"type": 1, "text_item": {"text": text}}],
+                "item_list": [{"type": MESSAGE_ITEM_TYPE_TEXT, "text_item": {"text": text}}],
             },
-            "base_info": {"channel_version": CHANNEL_VERSION},
         }
 
-        resp = self._session.post(
-            f"{self.base_url}/ilink/bot/sendmessage",
-            headers=_headers(self.bot_token),
-            json=payload,
+        data = self._post_json(
+            "ilink/bot/sendmessage",
+            payload,
+            token=self.bot_token,
             timeout=8,
         )
-        resp.raise_for_status()
-        data = resp.json()
         ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
         if ret != 0 or errcode != 0:
@@ -258,31 +322,27 @@ class ILinkClient:
         config_payload = {
             "ilink_user_id": to_user_id,
             "context_token": context_token,
-            "base_info": {"channel_version": "1.0.0"},
         }
-        config_resp = self._session.post(
-            f"{self.base_url}/ilink/bot/getconfig",
-            headers=_headers(self.bot_token),
-            json=config_payload,
+        config_data = self._post_json(
+            "ilink/bot/getconfig",
+            config_payload,
+            token=self.bot_token,
             timeout=10,
         )
-        config_data = config_resp.json()
         typing_ticket = config_data.get("typing_ticket", "")
 
         payload = {
             "ilink_user_id": to_user_id,
             "typing_ticket": typing_ticket,
             "status": 1,
-            "base_info": {"channel_version": "1.0.0"},
         }
 
-        resp = self._session.post(
-            f"{self.base_url}/ilink/bot/sendtyping",
-            headers=_headers(self.bot_token),
-            json=payload,
+        data = self._post_json(
+            "ilink/bot/sendtyping",
+            payload,
+            token=self.bot_token,
             timeout=10,
         )
-        data = resp.json()
         ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
 
@@ -295,7 +355,7 @@ class ILinkClient:
 
     # ── 媒体上传 ──
 
-    def upload_media(self, file_data: bytes, media_type: int = 1, to_user_id: str = "") -> dict:
+    def upload_media(self, file_data: bytes, media_type: int = UPLOAD_MEDIA_TYPE_IMAGE, to_user_id: str = "") -> dict:
         """
         上传媒体文件到腾讯 CDN
 
@@ -303,7 +363,7 @@ class ILinkClient:
 
         参数:
             file_data: 原始文件字节
-            media_type: 1=图片, 2=视频, 3=语音, 4=文件
+            media_type: 1=图片, 2=视频, 3=文件, 4=语音
         返回:
             {"encrypt_query_param": "...", "aes_key_b64": "...", "file_size": ...}
         """
@@ -334,18 +394,15 @@ class ILinkClient:
             "filesize": len(encrypted_data),
             "no_need_thumb": True,
             "aeskey": aes_key.hex(),
-            "base_info": {"channel_version": CHANNEL_VERSION},
             "to_user_id": to_user_id,
         }
         logger.info("getuploadurl req: %s", json.dumps(upload_req))
-        resp = self._session.post(
-            f"{self.base_url}/ilink/bot/getuploadurl",
-            headers=_headers(self.bot_token),
-            json=upload_req,
+        upload_data = self._post_json(
+            "ilink/bot/getuploadurl",
+            upload_req,
+            token=self.bot_token,
             timeout=15,
         )
-        resp.raise_for_status()
-        upload_data = resp.json()
 
         ret = upload_data.get("ret", 0)
         if ret != 0:
@@ -414,7 +471,7 @@ class ILinkClient:
             raise RuntimeError("未登录，请先扫码")
 
         # 上传图片到 CDN
-        upload_result = self.upload_media(file_data, media_type=1, to_user_id=to_user_id)
+        upload_result = self.upload_media(file_data, media_type=UPLOAD_MEDIA_TYPE_IMAGE, to_user_id=to_user_id)
 
         client_id = f"openclaw-weixin:{int(time.time() * 1000)}-{os.urandom(4).hex()}"
         payload = {
@@ -427,7 +484,7 @@ class ILinkClient:
                 "context_token": context_token,
                 "item_list": [
                     {
-                        "type": 2,
+                        "type": MESSAGE_ITEM_TYPE_IMAGE,
                         "image_item": {
                             "aeskey": upload_result["aes_key_hex"],
                             "media": {
@@ -440,17 +497,14 @@ class ILinkClient:
                     }
                 ],
             },
-            "base_info": {"channel_version": CHANNEL_VERSION},
         }
 
-        resp = self._session.post(
-            f"{self.base_url}/ilink/bot/sendmessage",
-            headers=_headers(self.bot_token),
-            json=payload,
+        data = self._post_json(
+            "ilink/bot/sendmessage",
+            payload,
+            token=self.bot_token,
             timeout=15,
         )
-        resp.raise_for_status()
-        data = resp.json()
         ret = data.get("ret", 0)
         errcode = data.get("errcode", 0)
         if ret != 0 or errcode != 0:

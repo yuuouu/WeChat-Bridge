@@ -1,0 +1,75 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "WeChat Bridge"
+msgstr "WeChat Bridge"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Container Status"
+msgstr "容器状态"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "Not installed"
+msgstr "未安装"
+
+msgid "Open Web Panel"
+msgstr "打开 Web 面板"
+
+msgid "Enable"
+msgstr "启用"
+
+msgid "Web Port"
+msgstr "Web 端口"
+
+msgid "Data Directory"
+msgstr "数据目录"
+
+msgid "Image Name"
+msgstr "镜像名"
+
+msgid "Image Tag"
+msgstr "镜像 Tag"
+
+msgid "API Token"
+msgstr "API Token"
+
+msgid "Markdown Mode"
+msgstr "Markdown 模式"
+
+msgid "Markdown"
+msgstr "Markdown"
+
+msgid "Normalize"
+msgstr "整理普通通知"
+
+msgid "Plain Text"
+msgstr "纯文本"
+
+msgid "Install / Rebuild Container"
+msgstr "安装 / 重建容器"
+
+msgid "Start"
+msgstr "启动"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "Restart"
+msgstr "重启"
+
+msgid "Upgrade Image"
+msgstr "升级镜像"
+
+msgid "Last Action Output"
+msgstr "上次操作输出"
+
+msgid "Recent Logs"
+msgstr "最近日志"

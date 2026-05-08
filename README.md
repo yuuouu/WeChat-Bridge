@@ -292,7 +292,7 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 
 本项目在协议研究与底层实现上参考了以下开源项目：
 
-- [wechat-ilink-client](https://github.com/photon-hq/wechat-ilink-client)
+- [openclaw-weixin](https://github.com/Tencent/openclaw-weixin/blob/main/README.zh_CN.md)
 - [iLink Bot API 底层协议客户端实现](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin)
 
 ---

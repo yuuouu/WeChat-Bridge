@@ -1,0 +1,8 @@
+config wechat-bridge 'config'
+	option enabled '0'
+	option port '5200'
+	option config_path ''
+	option image_name 'ghcr.io/yuuouu/wechat-bridge'
+	option image_tag 'latest'
+	option api_token ''
+	option markdown_mode 'markdown'
