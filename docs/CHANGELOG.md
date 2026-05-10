@@ -2,6 +2,49 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [1.2.0] - 2026-05-10
+
+### Added
+- 新增 Webhook 插件系统（`webhook_manager.py`）：统一 HTTP 入口，支持多插件自动发现、命令路由与会话管理
+- 新增 Bridge Code Agent（`bridge_code_agent.py`）：通过微信远程驱动 Mac 上的 AI CLI（Gemini / Claude Code / Codex），支持 `/code`、`/switch`、`/cli`、`/exit` 命令
+- 新增静默模式（Mute）：可对指定联系人关闭 AI 自动回复
+- 新增多账号支持：`bot_id` 隔离不同 Bot 实例的数据与配置
+- 新增 OpenWRT / iStoreOS 原生支持与对应部署文档
+
+### Changed
+- README 全面重构：新增 banner、Code Agent 效果预览图、「数据主权」定位
+- `bridge-code-agent.md` 新增完整对话截图与插件开发指南
+- 图片资源统一去除 `screenshot-` 前缀，文件名更简洁
+- 重构 ilink 核心逻辑，提升稳定性；补全相关单元测试
+
+### Fixed
+- 修复 ruff lint / format 检查错误，CI 全量通过
+
+---
+
+## [1.1.1] - 2026-05-06
+
+### Added
+- 新增自定义 AI 厂商支持（任意 OpenAI-compatible 服务）
+- 新增可选匿名遥测，可在 Web UI 中开启或关闭
+- 新增 Markdown normalize 模式（`MARKDOWN_MODE=normalize`），将普通通知自动整理为 Markdown
+- 新增 ZIP 安装包与对应安装指南
+- 新增 GitHub 直连探针与边缘节点缓存加速安装脚本
+
+### Changed
+- Web 管理面板升级：界面布局与配置交互优化
+- 安装脚本新增 Cloudflare 代理回退逻辑，提升国内网络下的安装成功率
+- 全模块补齐 `from __future__ import annotations`
+
+### Fixed
+- 修复并发场景下的线程安全问题，重构投递状态机
+
+### Docs
+- 重构 README，新增 Webhook 日记收集器示例
+- 补充卸载脚本使用指南
+
+---
+
 ## [1.1.0] - 2026-04-30
 
 ### Added

@@ -89,8 +89,8 @@ curl -X POST http://localhost:5200/api/push \
 <div align="center">
   <table>
     <tr>
-      <td align="center"><img src="assets/screenshot-qinglong-setting.png" alt="青龙面板通知设置" width="400"></td>
-      <td align="center"><img src="assets/screenshot-wechat-notify.jpg" alt="微信收到通知效果" width="250"></td>
+      <td align="center"><img src="assets/qinglong-setting.png" alt="青龙面板通知设置" width="400"></td>
+      <td align="center"><img src="assets/wechat-notify.jpg" alt="微信收到通知效果" width="250"></td>
     </tr>
     <tr>
       <td align="center"><em>青龙面板通知设置</em></td>
@@ -135,7 +135,7 @@ curl -X POST http://localhost:5200/api/push \
 > 💡 **提示**：`to` 字段中的 `user_id` 可在微信中发送 `/uid` 指令获取。`url` 中的 IP 通常为路由器网关地址（如 `192.168.100.1`）。如设置了 `API_TOKEN`，在 URL 末尾追加 `?token=你的密钥`。如果你已经在 Docker 中设置了 `MARKDOWN_MODE=normalize`，这里的 `markdown` 字段可以省略。
 
 <div align="center">
-  <img src="assets/screenshot-luci-wechatpush.png" alt="luci-app-wechatpush 自定义推送配置" width="600">
+  <img src="assets/luci-wechatpush.png" alt="luci-app-wechatpush 自定义推送配置" width="600">
   <br><em>luci-app-wechatpush 自定义推送配置页面</em>
 </div>
 

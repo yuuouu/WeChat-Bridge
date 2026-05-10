@@ -4,21 +4,27 @@
 
 **把微信 Bot 变成可编程的 HTTP 消息通道**
 
-**轻量 · 开箱即用 · 跨平台原生运行**
+**轻量 · 数据主权 · 跨平台开箱即用**
+
+<img src="docs/assets/banner.png" alt="WeChat Bridge" width="240">
 
 </div>
 
 ---
 
-## 它解决什么问题
+## 通过微信远程操控 AI CLI
 
-WeChat Bridge 适合把微信当成一个轻量、私有、可编程的消息入口：
+在手机微信里向 Bot 发指令，即可驱动运行在电脑上的 AI CLI（Gemini / Claude Code / Codex）执行代码分析、单测生成、架构问答等任务——无需远程连接电脑，随时随地进行代码审查。直接向 Bot 发消息，AI CLI 在电脑上执行，结果实时回传微信
 
-- **从任意系统发微信**：服务器告警、NAS 下载完成、路由器状态、CI/CD 结果、定时任务报告，都可以 `curl /api/send` 推到微信
-- **把 send 接口开放到公网**：通过 HTTPS 域名、反向代理或内网穿透暴露 `/api/send` 后，任何网络里的脚本、云函数、手机快捷指令都能向你的微信 Bot 发消息
-- **把微信变成业务前端**：用户在微信里发消息，Bridge 转发到你的 Webhook；业务服务处理后再调用 `/api/send` 异步回写
-- **快速接入 AI 助手**：内置 OpenAI / Gemini / Claude / DeepSeek / MiniMax，也支持自定义 OpenAI-compatible 服务
-- **本地优先部署**：Docker、Windows、macOS、Linux 都可运行，数据默认保存在本机
+- `/code <项目名>` 进入指定项目的 AI 会话，Bot 立即回传"已进入"确认
+- `/switch gemini / claude / codex` 随时切换 AI 后端，session 自动重置
+- `/exit` 关闭会话
+
+<div align="center">
+  <img src="docs/assets/code-agent.png" alt="通过微信远程操控 AI CLI 示例" width="360">
+</div>
+
+详见 [Bridge Code Agent](docs/bridge-code-agent.md)
 
 ---
 
@@ -70,11 +76,11 @@ docker compose up -d
 <div align="center">
   <table>
     <tr>
-      <td align="center"><img src="docs/assets/screenshot-chat.png" alt="WeChat Bridge 聊天界面" width="500"></td>
-      <td align="center"><img src="docs/assets/screenshot-quota-limit.png" alt="10条配额风控机制" width="250"></td>
-      <td align="center"><img src="docs/assets/screenshot-daily-push.jpg" alt="日常签到与金价推送" width="250"></td>
-      <td align="center"><img src="docs/assets/screenshot-system-push.jpg" alt="系统报告与路由器状态推送" width="250"></td>
-      <td align="center"><img src="docs/assets/screenshot-markdown-render.png" alt="Markdown 文本渲染效果" width="250"></td>
+      <td align="center"><img src="docs/assets/chat.png" alt="WeChat Bridge 聊天界面" width="500"></td>
+      <td align="center"><img src="docs/assets/quota-limit.png" alt="10条配额风控机制" width="250"></td>
+      <td align="center"><img src="docs/assets/daily-push.jpg" alt="日常签到与金价推送" width="250"></td>
+      <td align="center"><img src="docs/assets/system-push.jpg" alt="系统报告与路由器状态推送" width="250"></td>
+      <td align="center"><img src="docs/assets/markdown-render.png" alt="Markdown 文本渲染效果" width="250"></td>
     </tr>
     <tr>
       <td align="center"><em>Web 管理面板</em></td>
@@ -263,7 +269,7 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 | [API 接口参考](docs/api-reference.md) | 完整 API、青龙面板 / iStoreOS 集成、Webhook 适配器 |
 | [异步回写集成指南](docs/webhook-async-reply.md) | 外部 Webhook 接入流程与调试建议 |
 | [Webhook 示例](docs/webhook-examples.md) | 微信日记收集器完整搭建示例 |
-| [Bridge Code Agent](docs/bridge-code-agent.md) | 通过微信远程操控 Mac 上的 AI CLI（Gemini / Claude / Codex） |
+| [Bridge Code Agent](docs/bridge-code-agent.md) | 通过微信远程操控电脑上的 AI CLI（Gemini / Claude / Codex） |
 | [工作原理](docs/architecture.md) | iLink 协议桥接时序图与核心流程解析 |
 | [更新日志](docs/CHANGELOG.md) | 版本变更记录 |
 

@@ -16,7 +16,7 @@
 ## 效果
 
 <div align="center">
-  <img src="assets/screenshot-webhook-journal.jpg" alt="Webhook 日记收集器微信使用效果" width="420">
+  <img src="assets/webhook-journal.jpg" alt="Webhook 日记收集器微信使用效果" width="420">
   <br><em>在微信中用 /rj 开始记录，发送多条内容后用 /exit 结束</em>
 </div>
 
