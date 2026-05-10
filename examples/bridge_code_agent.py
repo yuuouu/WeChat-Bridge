@@ -24,6 +24,7 @@ Bridge Code Agent — 通过微信远程操控 Mac 上的 AI CLI（Gemini / Clau
     /cli <参数>            → 透传给当前后端 CLI 原生执行
     /exit                  → 退出当前会话
 """
+
 from __future__ import annotations
 
 import json
@@ -43,9 +44,7 @@ BRIDGE_BASE_URL = os.environ.get("BRIDGE_BASE_URL", "http://127.0.0.1:5200").rst
 BRIDGE_API_TOKEN = os.environ.get("BRIDGE_API_TOKEN", "").strip()
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT_MINUTES", "30")) * 60
 CLI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", "180"))
-ALLOWED_USERS: set[str] = {
-    u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()
-}
+ALLOWED_USERS: set[str] = {u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_MAP_FILE = _SCRIPT_DIR / "project_map.json"
@@ -62,12 +61,12 @@ MAX_CHUNK = 4500
 CLI_BACKENDS: dict[str, str] = {
     "gemini": "Gemini",
     "claude": "Claude Code",
-    "codex":  "Codex",
+    "codex": "Codex",
 }
 CLI_BINARIES: dict[str, str] = {
     "gemini": "gemini",
     "claude": "claude",
-    "codex":  "codex",
+    "codex": "codex",
 }
 
 DEFAULT_BACKEND = os.environ.get("DEFAULT_BACKEND", "gemini")
@@ -111,6 +110,7 @@ def _build_cmd(backend: str, prompt: str, cwd: str, *, resume: bool) -> list[str
 
 # ── Project map ──────────────────────────────────────────────────────────────
 
+
 def _load_project_map() -> dict[str, str]:
     if not PROJECT_MAP_FILE.exists():
         _log("warn", msg=f"project_map.json 不存在，请复制 {PROJECT_MAP_EXAMPLE.name} 并按实际路径修改")
@@ -124,6 +124,7 @@ def _load_project_map() -> dict[str, str]:
 
 
 # ── DataClasses ───────────────────────────────────────────────────────────────
+
 
 @dataclass
 class SessionStats:
@@ -159,11 +160,13 @@ class CodeSession:
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
+
 def _log(event: str, **kwargs) -> None:
     print(json.dumps({"event": event, **kwargs}, ensure_ascii=False), flush=True)
 
 
 # ── WeChat Bridge API ─────────────────────────────────────────────────────────
+
 
 def _api_post(path: str, body: dict) -> tuple[bool, str]:
     payload = json.dumps(body).encode("utf-8")
@@ -224,6 +227,7 @@ def _send_output(to_user: str, output: str, *, footer: str = "") -> None:
 
 # ── AI CLI 调用 ───────────────────────────────────────────────────────────────
 
+
 def _parse_claude_json(raw: str) -> tuple[str, dict]:
     """解析 Claude --output-format json 的输出，返回 (文本, 用量统计)。"""
     try:
@@ -231,10 +235,10 @@ def _parse_claude_json(raw: str) -> tuple[str, dict]:
         text = data.get("result", "")
         usage = data.get("usage", {})
         stats = {
-            "input_tokens":      usage.get("input_tokens", 0),
+            "input_tokens": usage.get("input_tokens", 0),
             "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
-            "output_tokens":     usage.get("output_tokens", 0),
-            "cost_usd":          data.get("total_cost_usd", 0.0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "cost_usd": data.get("total_cost_usd", 0.0),
         }
         return text or "(Claude 无输出)", stats
     except (json.JSONDecodeError, AttributeError):
@@ -247,7 +251,11 @@ def _run_cli(prompt: str, cwd: str, backend: str, *, resume: bool) -> tuple[str,
     _log("cli_invoke", backend=backend, resume=resume, cmd_head=" ".join(cmd[:3]))
     try:
         result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=CLI_TIMEOUT,
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT,
         )
         raw = result.stdout.strip()
 
@@ -277,7 +285,11 @@ def _run_raw(cmd: list[str], cwd: str) -> str:
     _log("cli_raw", cmd=" ".join(cmd[:4]))
     try:
         result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=CLI_TIMEOUT,
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT,
         )
         output = result.stdout.strip()
         if result.stderr.strip():
@@ -302,17 +314,15 @@ def _format_project_list(project_map: dict[str, str]) -> str:
 def _stats_footer(stats: dict, cumulative: SessionStats) -> str:
     """构造 Claude token 用量单行 footer。"""
     in_tok = stats.get("input_tokens", 0)
-    cache  = stats.get("cache_read_tokens", 0)
-    out    = stats.get("output_tokens", 0)
-    cost   = stats.get("cost_usd", 0.0)
+    cache = stats.get("cache_read_tokens", 0)
+    out = stats.get("output_tokens", 0)
+    cost = stats.get("cost_usd", 0.0)
     cache_hint = f" +{cache:,}↩" if cache else ""
-    return (
-        f"📊 `{in_tok:,}`{cache_hint} in / `{out:,}` out"
-        f" · ${cost:.4f}（累计 ${cumulative.cost_usd:.4f}）"
-    )
+    return f"📊 `{in_tok:,}`{cache_hint} in / `{out:,}` out · ${cost:.4f}（累计 ${cumulative.cost_usd:.4f}）"
 
 
 # ── Plugin ────────────────────────────────────────────────────────────────────
+
 
 class CodeAgentPlugin:
     """Bridge Code Agent 插件。
@@ -336,10 +346,10 @@ class CodeAgentPlugin:
     def get_command_specs(self) -> list[dict]:
         backends_str = " / ".join(CLI_BACKENDS.keys())
         return [
-            {"command": START_COMMAND,  "description": f"开启代码 Agent 会话，可选后端: {backends_str}"},
+            {"command": START_COMMAND, "description": f"开启代码 Agent 会话，可选后端: {backends_str}"},
             {"command": SWITCH_COMMAND, "description": "session 内切换 AI 后端（重置 CLI session）"},
-            {"command": CLI_COMMAND,    "description": "透传原生 CLI 命令，如 /cli --list-sessions"},
-            {"command": "/exit",        "description": "退出代码 Agent 会话"},
+            {"command": CLI_COMMAND, "description": "透传原生 CLI 命令，如 /cli --list-sessions"},
+            {"command": "/exit", "description": "退出代码 Agent 会话"},
         ]
 
     def has_session(self, user_id: str) -> bool:
@@ -375,27 +385,36 @@ class CodeAgentPlugin:
             project_map = _load_project_map()
             if not project_name:
                 backends = " | ".join(CLI_BACKENDS.keys())
-                _send(from_user, (
-                    f"## ❓ 用法\n\n`/code <项目名> [后端]`\n\n"
-                    f"**可用项目**\n\n{_format_project_list(project_map)}\n\n"
-                    f"**可用后端**：`{backends}`（默认 `{DEFAULT_BACKEND}`）"
-                ))
+                _send(
+                    from_user,
+                    (
+                        f"## ❓ 用法\n\n`/code <项目名> [后端]`\n\n"
+                        f"**可用项目**\n\n{_format_project_list(project_map)}\n\n"
+                        f"**可用后端**：`{backends}`（默认 `{DEFAULT_BACKEND}`）"
+                    ),
+                )
                 return
             if project_name not in project_map:
-                _send(from_user, (
-                    f"## ❌ 未知项目\n\n`{project_name}` 不在 project_map.json 中\n\n"
-                    f"**可用项目**\n\n{_format_project_list(project_map)}"
-                ))
+                _send(
+                    from_user,
+                    (
+                        f"## ❌ 未知项目\n\n`{project_name}` 不在 project_map.json 中\n\n"
+                        f"**可用项目**\n\n{_format_project_list(project_map)}"
+                    ),
+                )
                 return
 
             project_path = project_map[project_name]
             self._start_session(from_user, project_name, project_path, backend)
-            _send(from_user, (
-                f"## ✅ 已进入 `{project_name}`\n\n"
-                f"- **路径**：`{project_path}`\n"
-                f"- **后端**：`{CLI_BACKENDS[backend]}` (`{backend}`)\n"
-                f"- 直接发消息与 AI 对话，`/switch <后端>` 切换，`/cli <参数>` 调用原生命令，`/exit` 退出"
-            ))
+            _send(
+                from_user,
+                (
+                    f"## ✅ 已进入 `{project_name}`\n\n"
+                    f"- **路径**：`{project_path}`\n"
+                    f"- **后端**：`{CLI_BACKENDS[backend]}` (`{backend}`)\n"
+                    f"- 直接发消息与 AI 对话，`/switch <后端>` 切换，`/cli <参数>` 调用原生命令，`/exit` 退出"
+                ),
+            )
             _log("session_start", user=from_name, project=project_name, backend=backend)
             return
 
@@ -413,11 +432,14 @@ class CodeAgentPlugin:
             old_backend = sess.backend
             sess.backend = new_backend
             sess.is_first_cli_call = True
-            _send(from_user, (
-                f"## 🔄 后端已切换\n\n"
-                f"- **{CLI_BACKENDS[old_backend]}** → **{CLI_BACKENDS[new_backend]}**\n"
-                f"- CLI session 已重置，下一条消息开始新的 {CLI_BACKENDS[new_backend]} 会话"
-            ))
+            _send(
+                from_user,
+                (
+                    f"## 🔄 后端已切换\n\n"
+                    f"- **{CLI_BACKENDS[old_backend]}** → **{CLI_BACKENDS[new_backend]}**\n"
+                    f"- CLI session 已重置，下一条消息开始新的 {CLI_BACKENDS[new_backend]} 会话"
+                ),
+            )
             _log("backend_switch", user=from_name, old=old_backend, new=new_backend)
             return
 
@@ -430,13 +452,16 @@ class CodeAgentPlugin:
             raw_args = payload.get("args", "").strip()
             if not raw_args:
                 binary = CLI_BINARIES[sess.backend]
-                _send(from_user, (
-                    f"## ❓ 用法\n\n`/cli <原生参数>`\n\n"
-                    f"透传给 `{binary}`，例如：\n"
-                    f"- `/cli --list-sessions`\n"
-                    f"- `/cli --version`\n"
-                    f"- `/cli exec review`（codex）"
-                ))
+                _send(
+                    from_user,
+                    (
+                        f"## ❓ 用法\n\n`/cli <原生参数>`\n\n"
+                        f"透传给 `{binary}`，例如：\n"
+                        f"- `/cli --list-sessions`\n"
+                        f"- `/cli --version`\n"
+                        f"- `/cli exec review`（codex）"
+                    ),
+                )
                 return
             try:
                 args = shlex.split(raw_args, posix=(sys.platform != "win32"))
@@ -485,9 +510,15 @@ class CodeAgentPlugin:
 
         footer = _stats_footer(stats, sess.stats) if stats.get("input_tokens") else ""
         _send_output(from_user, output, footer=footer)
-        _log("cli_reply", user=from_name, project=sess.project_name, backend=backend,
-             prompt_len=len(text), output_len=len(output),
-             cost_usd=round(stats.get("cost_usd", 0), 6))
+        _log(
+            "cli_reply",
+            user=from_name,
+            project=sess.project_name,
+            backend=backend,
+            prompt_len=len(text),
+            output_len=len(output),
+            cost_usd=round(stats.get("cost_usd", 0), 6),
+        )
 
     def on_start(self) -> None:
         pass
@@ -508,9 +539,7 @@ class CodeAgentPlugin:
                 return None
             return sess
 
-    def _start_session(
-        self, user_id: str, project_name: str, project_path: str, backend: str
-    ) -> CodeSession:
+    def _start_session(self, user_id: str, project_name: str, project_path: str, backend: str) -> CodeSession:
         sess = CodeSession(
             user_id=user_id,
             project_name=project_name,
@@ -537,6 +566,7 @@ if __name__ == "__main__":
     # 单独启动时：通过 webhook_manager 只加载本插件
     sys.path.insert(0, str(_SCRIPT_DIR))
     from webhook_manager import WebhookManager  # noqa: E402
+
     mgr = WebhookManager()
     mgr.load_plugin(CodeAgentPlugin())
     mgr.run()

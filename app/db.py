@@ -258,9 +258,11 @@ def get_bot_account(bot_id: str) -> dict | None:
 
 def list_bot_login_events(bot_id: str) -> list[dict]:
     with _lock:
-        rows = _get_accounts_conn().execute(
-            "SELECT * FROM bot_login_events WHERE bot_id = ? ORDER BY id", (bot_id,)
-        ).fetchall()
+        rows = (
+            _get_accounts_conn()
+            .execute("SELECT * FROM bot_login_events WHERE bot_id = ? ORDER BY id", (bot_id,))
+            .fetchall()
+        )
     return [dict(row) for row in rows]
 
 
@@ -461,7 +463,9 @@ def init_db(db_file: str = None):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_id, status, created_at)"
         )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_contact_activity_inbound ON contact_activity(last_inbound_at DESC)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contact_activity_inbound ON contact_activity(last_inbound_at DESC)"
+        )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_default_recipient_decisions_time ON default_recipient_decisions(selected_at DESC)"
         )
@@ -671,9 +675,11 @@ def record_default_recipient_decision(
 
 def list_default_recipient_decisions(limit: int = 20) -> list[dict]:
     with _lock:
-        rows = _get_conn().execute(
-            "SELECT * FROM default_recipient_decisions ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        rows = (
+            _get_conn()
+            .execute("SELECT * FROM default_recipient_decisions ORDER BY id DESC LIMIT ?", (limit,))
+            .fetchall()
+        )
     return [dict(row) for row in rows]
 
 

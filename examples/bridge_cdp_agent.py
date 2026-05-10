@@ -45,16 +45,17 @@ BRIDGE_API_TOKEN = os.environ.get("BRIDGE_API_TOKEN", "").strip()
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT_MINUTES", "30")) * 60
 CDP_PORT = int(os.environ.get("CDP_PORT", "9333"))
 CDP_TIMEOUT = int(os.environ.get("CDP_TIMEOUT", "180"))
-ALLOWED_USERS: set[str] = {
-    u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()
-}
+ALLOWED_USERS: set[str] = {u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()}
 
 MAX_CHUNK = 4500
+
 
 def _log(event: str, **kwargs):
     print(json.dumps({"event": event, **kwargs}, ensure_ascii=False), flush=True)
 
+
 # ── WeChat Bridge API ─────────────────────────────────────────────────────────
+
 
 def _api_post(path: str, body: dict) -> tuple[bool, str]:
     payload = json.dumps(body).encode("utf-8")
@@ -74,13 +75,16 @@ def _api_post(path: str, body: dict) -> tuple[bool, str]:
     except Exception as exc:
         return False, str(exc)
 
+
 def _send(to_user: str, text: str) -> bool:
     ok, result = _api_post("/api/send", {"to": to_user, "text": text, "markdown": True})
     if not ok:
         _log("send_failed", to=to_user[:16], error=result[:120])
     return ok
 
+
 # ── CDP Client ────────────────────────────────────────────────────────────────
+
 
 class CDPClient:
     def __init__(self, ws_url: str):
@@ -124,11 +128,9 @@ class CDPClient:
             self._pending.pop(msg_id, None)
 
     async def evaluate(self, expression: str, await_promise: bool = True) -> dict:
-        res = await self.send_cmd("Runtime.evaluate", {
-            "expression": expression,
-            "awaitPromise": await_promise,
-            "returnByValue": True
-        })
+        res = await self.send_cmd(
+            "Runtime.evaluate", {"expression": expression, "awaitPromise": await_promise, "returnByValue": True}
+        )
         return res
 
     async def disconnect(self):
@@ -137,12 +139,13 @@ class CDPClient:
         if self.ws:
             await self.ws.close()
 
+
 async def get_target_ws_url():
     def fetch():
         req = urllib.request.Request(f"http://127.0.0.1:{CDP_PORT}/json/list")
         try:
             with urllib.request.urlopen(req, timeout=3) as resp:
-                return json.loads(resp.read().decode('utf-8'))
+                return json.loads(resp.read().decode("utf-8"))
         except Exception:
             return None
 
@@ -156,6 +159,7 @@ async def get_target_ws_url():
             return target.get("webSocketDebuggerUrl")
     return None
 
+
 async def _process_cdp_task(user_id: str, text: str):
     ws_url = await get_target_ws_url()
     if not ws_url:
@@ -167,7 +171,7 @@ async def _process_cdp_task(user_id: str, text: str):
         await client.connect()
 
         # 1. 定位输入框并选中
-        focus_expr = '''
+        focus_expr = """
             (() => {
                 const input = document.querySelector('[contenteditable="true"][role="textbox"]:not(.xterm-helper-textarea)');
                 if (input) {
@@ -181,7 +185,7 @@ async def _process_cdp_task(user_id: str, text: str):
                 }
                 return 'not-found';
             })()
-        '''
+        """
         res = await client.evaluate(focus_expr)
         if res.get("result", {}).get("result", {}).get("value") != "ready":
             _send(user_id, "❌ 未能在 IDE 面板中找到聊天输入框。")
@@ -192,8 +196,14 @@ async def _process_cdp_task(user_id: str, text: str):
         await asyncio.sleep(0.1)
 
         # 3. 模拟回车提交
-        await client.send_cmd("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13})
-        await client.send_cmd("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13})
+        await client.send_cmd(
+            "Input.dispatchKeyEvent",
+            {"type": "keyDown", "key": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13},
+        )
+        await client.send_cmd(
+            "Input.dispatchKeyEvent",
+            {"type": "keyUp", "key": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13},
+        )
 
         _send(user_id, "🚀 提示词已投递到 Antigravity，正在生成...")
 
@@ -205,13 +215,13 @@ async def _process_cdp_task(user_id: str, text: str):
         await asyncio.sleep(2.0)
 
         while time.time() - start_time < CDP_TIMEOUT:
-            check_busy_expr = '''
+            check_busy_expr = """
                 (() => {
                     const stopBtn = document.querySelector('button[aria-label*="stop"], button[aria-label*="Stop"], [class*="stop"]');
                     const progress = document.querySelector('[class*="progress_activity"], [class*="animate-spin"]');
                     return !!(stopBtn || progress);
                 })()
-            '''
+            """
             res = await client.evaluate(check_busy_expr)
             is_busy = res.get("result", {}).get("result", {}).get("value")
 
@@ -225,7 +235,7 @@ async def _process_cdp_task(user_id: str, text: str):
             _send(user_id, "⚠️ 生成超时，正在抓取当前已有的回复...")
 
         # 5. 抓取最新的回复
-        extract_expr = '''
+        extract_expr = """
             (() => {
                 const msgs = document.querySelectorAll('.rendered-markdown:not([data-message-author-role="user"]):not([data-message-role="user"]), [data-message-author-role="assistant"], [data-message-role="assistant"]');
                 if (msgs.length > 0) {
@@ -233,7 +243,7 @@ async def _process_cdp_task(user_id: str, text: str):
                 }
                 return '';
             })()
-        '''
+        """
         res = await client.evaluate(extract_expr)
         reply_text = res.get("result", {}).get("result", {}).get("value", "")
 
@@ -250,6 +260,7 @@ async def _process_cdp_task(user_id: str, text: str):
         _send(user_id, f"❌ CDP 交互失败: {str(e)}")
     finally:
         await client.disconnect()
+
 
 def handle_incoming(payload: dict):
     from_user = payload.get("from_user", "")
@@ -274,6 +285,7 @@ def handle_incoming(payload: dict):
 
     threading.Thread(target=_run_async, daemon=True).start()
 
+
 class WebhookHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", "0"))
@@ -296,11 +308,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+
 if __name__ == "__main__":
-    _log("startup",
-         listen=f"http://{HOST}:{PORT}/webhook",
-         bridge_base_url=BRIDGE_BASE_URL,
-         cdp_port=CDP_PORT)
+    _log("startup", listen=f"http://{HOST}:{PORT}/webhook", bridge_base_url=BRIDGE_BASE_URL, cdp_port=CDP_PORT)
 
     try:
         ThreadingHTTPServer((HOST, PORT), WebhookHandler).serve_forever()

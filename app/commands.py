@@ -145,6 +145,7 @@ class CommandMixin:
                 mute_ts = self._mute_until.get(user_id, 0)
                 if mute_ts and time.time() < mute_ts:
                     from datetime import datetime
+
                     unmute_str = datetime.fromtimestamp(mute_ts).strftime("%H:%M")
                     return f"## 🔇 静默模式\n\n- **状态**：开启中\n- **恢复时间**：{unmute_str}\n- 回复任意内容自动关闭"
                 return "## 🔇 静默模式\n\n- **状态**：未开启\n- **用法**：`/mute 2h` 或 `/mute 30`（分钟）"
@@ -175,6 +176,7 @@ class CommandMixin:
             else:
                 display = f"{minutes}分钟"
             from datetime import datetime
+
             unmute_str = datetime.fromtimestamp(self._mute_until[user_id]).strftime("%H:%M")
             return f"## 🔇 静默模式已开启\n\n- **时长**：{display}\n- **恢复时间**：{unmute_str}\n- 期间推送将自动缓存，回复任意内容自动关闭"
 

@@ -623,6 +623,7 @@ class TestMuteFeature(BridgeDeliveryTests):
         mute_ts = self.bridge._mute_until.get("uid-1", 0)
         self.assertGreater(mute_ts, 0)
         import time
+
         expected = time.time() + 30 * 60
         self.assertAlmostEqual(mute_ts, expected, delta=5)
 
@@ -640,6 +641,7 @@ class TestMuteFeature(BridgeDeliveryTests):
         )
         mute_ts = self.bridge._mute_until.get("uid-1", 0)
         import time
+
         expected = time.time() + 120 * 60
         self.assertAlmostEqual(mute_ts, expected, delta=5)
 
@@ -657,6 +659,7 @@ class TestMuteFeature(BridgeDeliveryTests):
         )
         mute_ts = self.bridge._mute_until.get("uid-1", 0)
         import time
+
         expected = time.time() + 90 * 60
         self.assertAlmostEqual(mute_ts, expected, delta=5)
 
@@ -674,6 +677,7 @@ class TestMuteFeature(BridgeDeliveryTests):
         )
         mute_ts = self.bridge._mute_until.get("uid-1", 0)
         import time
+
         expected = time.time() + 30 * 60
         self.assertAlmostEqual(mute_ts, expected, delta=5)
 

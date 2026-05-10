@@ -570,8 +570,22 @@ def handle_register_commands(handler, ctx, params, body):
         return
 
     # 内置命令保护
-    builtin = {"/help", "/帮助", "/status", "/状态", "/pull", "/uid", "/retry", "/重试",
-               "/clear", "/清除", "/ai", "/keepalive", "/保活", "/mute"}
+    builtin = {
+        "/help",
+        "/帮助",
+        "/status",
+        "/状态",
+        "/pull",
+        "/uid",
+        "/retry",
+        "/重试",
+        "/clear",
+        "/清除",
+        "/ai",
+        "/keepalive",
+        "/保活",
+        "/mute",
+    }
     registered = []
     for item in commands:
         cmd = item.get("command", "").strip()

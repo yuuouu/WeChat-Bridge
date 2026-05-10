@@ -86,9 +86,7 @@ class DeliveryMixin:
 
     def _build_limit_warning(self, for_pull: bool = False) -> str:
         return (
-            "\n\n---\n\n"
-            "## ⚠️ 微信 bot 10 条上限\n\n"
-            "- 回复任意内容恢复消息发送，后续消息将自动缓存，可发送 `/pull` 拉取"
+            "\n\n---\n\n## ⚠️ 微信 bot 10 条上限\n\n- 回复任意内容恢复消息发送，后续消息将自动缓存，可发送 `/pull` 拉取"
         )
 
     # ── Overflow Session 管理 ──
@@ -305,6 +303,7 @@ class DeliveryMixin:
                         media_name=media_name,
                     )
                 from datetime import datetime
+
                 unmute_str = datetime.fromtimestamp(mute_ts).strftime("%H:%M")
                 return {"ok": False, "error": f"静默模式中，{unmute_str} 后恢复。"}
 
