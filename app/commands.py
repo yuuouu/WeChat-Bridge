@@ -12,7 +12,6 @@ import time
 from datetime import datetime
 
 import config as cfg
-from delivery import MAX_CONSECUTIVE_SENDS
 from fmt import md_inline as _md_inline
 
 logger = logging.getLogger(__name__)

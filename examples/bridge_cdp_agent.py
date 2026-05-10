@@ -26,8 +26,8 @@ pip3 install websockets
 import asyncio
 import json
 import os
-import time
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -145,11 +145,11 @@ async def get_target_ws_url():
                 return json.loads(resp.read().decode('utf-8'))
         except Exception:
             return None
-            
+
     targets = await asyncio.to_thread(fetch)
     if not targets:
         return None
-        
+
     # 查找 Antigravity 的 agent webview (通常带 vscode-webview 前缀)
     for target in targets:
         if target.get("url", "").startswith("vscode-webview://"):
@@ -165,7 +165,7 @@ async def _process_cdp_task(user_id: str, text: str):
     client = CDPClient(ws_url)
     try:
         await client.connect()
-        
+
         # 1. 定位输入框并选中
         focus_expr = '''
             (() => {
@@ -186,24 +186,24 @@ async def _process_cdp_task(user_id: str, text: str):
         if res.get("result", {}).get("result", {}).get("value") != "ready":
             _send(user_id, "❌ 未能在 IDE 面板中找到聊天输入框。")
             return
-            
+
         # 2. 注入提示词
         await client.send_cmd("Input.insertText", {"text": text})
         await asyncio.sleep(0.1)
-        
+
         # 3. 模拟回车提交
         await client.send_cmd("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13})
         await client.send_cmd("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13})
-        
+
         _send(user_id, "🚀 提示词已投递到 Antigravity，正在生成...")
-        
+
         # 4. 等待 Agent 处理完成（监测 stop 按钮或加载动画消失）
         start_time = time.time()
         agent_busy = True
-        
+
         # 等待开始加载
         await asyncio.sleep(2.0)
-        
+
         while time.time() - start_time < CDP_TIMEOUT:
             check_busy_expr = '''
                 (() => {
@@ -214,16 +214,16 @@ async def _process_cdp_task(user_id: str, text: str):
             '''
             res = await client.evaluate(check_busy_expr)
             is_busy = res.get("result", {}).get("result", {}).get("value")
-            
+
             if not is_busy:
                 agent_busy = False
                 break
-                
+
             await asyncio.sleep(1.5)
-            
+
         if agent_busy:
             _send(user_id, "⚠️ 生成超时，正在抓取当前已有的回复...")
-            
+
         # 5. 抓取最新的回复
         extract_expr = '''
             (() => {
@@ -236,7 +236,7 @@ async def _process_cdp_task(user_id: str, text: str):
         '''
         res = await client.evaluate(extract_expr)
         reply_text = res.get("result", {}).get("result", {}).get("value", "")
-        
+
         # 处理长文本
         if reply_text:
             if len(reply_text) > MAX_CHUNK:
@@ -244,7 +244,7 @@ async def _process_cdp_task(user_id: str, text: str):
             _send(user_id, f"💡 Antigravity：\n\n{reply_text}")
         else:
             _send(user_id, "⚠️ 未能抓取到回复文本，可能 IDE 内已报错，请直接查看 IDE。")
-            
+
     except Exception as e:
         _log("cdp_task_error", error=str(e))
         _send(user_id, f"❌ CDP 交互失败: {str(e)}")
@@ -255,13 +255,13 @@ def handle_incoming(payload: dict):
     from_user = payload.get("from_user", "")
     text = payload.get("text", "").strip()
     command = payload.get("command", "")
-    
+
     if not from_user or not text:
         return
 
     if ALLOWED_USERS and from_user not in ALLOWED_USERS:
         return
-        
+
     if command:
         return
 
