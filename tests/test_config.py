@@ -38,7 +38,7 @@ class LoadConfigDefaultsTests(unittest.TestCase):
         self.assertEqual(config["provider"], "openai")
         self.assertEqual(config["model"], "gpt-4o-mini")
         self.assertEqual(config["api_key"], "")
-        self.assertEqual(config["webhook_mode"], "unknown_command")
+        self.assertEqual(config["webhook_mode"], "all_messages")
         self.assertEqual(config["webhook_timeout"], 5)
         self.assertEqual(config["keepalive_remind_minutes"], 1380)
 
@@ -107,10 +107,10 @@ class WebhookValidationTests(unittest.TestCase):
         cfg.CONFIG_FILE = self._orig
         self.tempdir.cleanup()
 
-    def test_invalid_webhook_mode_falls_back_to_unknown_command(self):
+    def test_invalid_webhook_mode_falls_back_to_all_messages(self):
         cfg.save_config({**cfg.DEFAULT_CONFIG, "webhook_mode": "invalid_mode"})
         config = cfg.load_config()
-        self.assertEqual(config["webhook_mode"], "unknown_command")
+        self.assertEqual(config["webhook_mode"], "all_messages")
 
     def test_webhook_timeout_clamped_to_range(self):
         cfg.save_config({**cfg.DEFAULT_CONFIG, "webhook_timeout": 999})

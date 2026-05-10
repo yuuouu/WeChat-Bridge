@@ -79,9 +79,9 @@ DEFAULT_CONFIG = {
     "max_tokens_per_day": 100000,
     "usage": {},
     "keepalive_remind_minutes": 1380,  # 0=关闭, 60~1430=用户最后消息后N分钟发送提醒
-    "webhook_enabled": False,
+    "webhook_enabled": True,
     "webhook_url": "",
-    "webhook_mode": "unknown_command",
+    "webhook_mode": "all_messages",
     "webhook_timeout": 5,
     "telemetry_enabled": False,
 }
@@ -146,7 +146,7 @@ def load_config() -> dict:
             logger.warning("无效的 WEBHOOK_TIMEOUT: %s", os.environ["WEBHOOK_TIMEOUT"])
 
     if config.get("webhook_mode") not in ("unknown_command", "all_messages"):
-        config["webhook_mode"] = "unknown_command"
+        config["webhook_mode"] = "all_messages"
 
     try:
         config["webhook_timeout"] = max(1, min(30, int(config.get("webhook_timeout", 5))))

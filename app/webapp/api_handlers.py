@@ -21,12 +21,27 @@ from webapp.webhook_parser import parse_webhook_payload
 logger = logging.getLogger(__name__)
 
 
-def _pick_default_contact(ctx, to: str) -> str:
+def _pick_default_contact(
+    ctx,
+    to: str,
+    *,
+    request_path: str = "",
+    source: str = "",
+    title: str = "",
+    message_len: int = 0,
+) -> str:
     if to:
         return to
-    if ctx.bridge.contacts:
-        return list(ctx.bridge.contacts.values())[0]
-    return ""
+    selected = ctx.bridge.get_default_contact()
+    if selected:
+        ctx.bridge.record_default_recipient_decision(
+            selected,
+            request_path=request_path,
+            source=source,
+            title=title,
+            message_len=message_len,
+        )
+    return selected
 
 
 def _compose_title_text(title: str, text: str) -> str:
@@ -88,9 +103,10 @@ def handle_status(handler, ctx, params):
 def handle_contacts(handler, ctx, params):
     if not handler._check_api_token():
         return
+    contacts = ctx.bridge.get_ordered_contacts()
     handler._json_response(
         {
-            "contacts": ctx.bridge.contacts,
+            "contacts": contacts,
             "context_tokens": {k: v[:20] + "..." for k, v in ctx.bridge.context_tokens.items()},
             "delivery_states": ctx.bridge.get_contact_delivery_summaries(),
         }
@@ -137,6 +153,7 @@ def handle_qr_status(handler, ctx, params):
                 ctx.qr_cache.updated_at = 0.0
         if ctx.client.logged_in and status_data.get("status") == "confirmed":
             ctx.bridge._setup_data_dir()
+            ctx.bridge.record_account_event("login_confirmed", reason="qr_confirmed")
             ctx.bridge._load_contacts()
             ctx.bridge.recent_messages.clear()
             ctx.bridge._consecutive_send_count.clear()
@@ -165,10 +182,17 @@ def handle_send_get(handler, ctx, params):
         handler._json_response({"ok": False, "error": "未登录"}, 401)
         return
 
-    to = _pick_default_contact(ctx, params.get("to", [""])[0])
     title = params.get("title", [""])[0]
     text = params.get("text", [""])[0] or params.get("content", [""])[0]
     text = _compose_title_text(title, text)
+    to = _pick_default_contact(
+        ctx,
+        params.get("to", [""])[0],
+        request_path="/api/send",
+        source="api",
+        title=title,
+        message_len=len(text),
+    )
 
     if not to:
         handler._json_response({"ok": False, "error": "无可用联系人，请指定 to 参数"}, 400)
@@ -193,10 +217,17 @@ def handle_push_get(handler, ctx, params):
         handler._json_response({"ok": False, "error": "未登录"}, 401)
         return
 
-    to = _pick_default_contact(ctx, params.get("to", [""])[0])
     title = params.get("title", [""])[0]
     text = params.get("text", [""])[0] or params.get("content", [""])[0]
     final_text = _compose_title_text(title, text)
+    to = _pick_default_contact(
+        ctx,
+        params.get("to", [""])[0],
+        request_path="/api/push",
+        source="api_push",
+        title=title,
+        message_len=len(final_text),
+    )
 
     if not to or not final_text:
         handler._json_response({"ok": False, "error": "需要 to 和 text 或 content 参数"}, 400)
@@ -267,8 +298,16 @@ def handle_send_post(handler, ctx, params, body):
     if data is None:
         return
 
-    to = _pick_default_contact(ctx, data.get("to", ""))
     text = data.get("text", "") or data.get("content", "")
+    title = data.get("title", "")
+    to = _pick_default_contact(
+        ctx,
+        data.get("to", ""),
+        request_path="/api/send",
+        source="api",
+        title=title,
+        message_len=len(text),
+    )
 
     if not to:
         handler._json_response({"ok": False, "error": "无可用联系人，请指定 to 参数"}, 400)
@@ -278,7 +317,7 @@ def handle_send_post(handler, ctx, params, body):
         return
 
     text = apply_markdown_mode(text, data.get("markdown"), data.get("markdown_mode"))
-    result = _multicast_send(ctx, to, text, source="api", title=data.get("title", ""))
+    result = _multicast_send(ctx, to, text, source="api", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -356,6 +395,7 @@ def handle_ag_inbox(handler, ctx, params, body):
 
 
 def handle_logout(handler, ctx, params, body):
+    ctx.bridge.record_account_event("logout", reason="web_logout")
     ctx.client.clear_token()
     ctx.qr_cache.data = None
     ctx.qr_cache.updated_at = 0.0
@@ -395,10 +435,17 @@ def handle_push_post(handler, ctx, params, body):
         markdown = form_data.get("markdown", [""])[0]
         markdown_mode = form_data.get("markdown_mode", [""])[0]
 
-    to = _pick_default_contact(ctx, to or params.get("to", [""])[0])
     text = text or params.get("text", [""])[0] or params.get("content", [""])[0]
     title = title or params.get("title", [""])[0]
     final_text = _compose_title_text(title, text)
+    to = _pick_default_contact(
+        ctx,
+        to or params.get("to", [""])[0],
+        request_path="/api/push",
+        source="api_push",
+        title=title,
+        message_len=len(final_text),
+    )
 
     if not to or not final_text:
         handler._json_response({"ok": False, "error": "需要 to 和 text 或 content 参数"}, 400)
@@ -427,11 +474,6 @@ def handle_webhook(handler, ctx, path, params, body):
         schema = path[len("/api/webhook/") :].strip("/")
     schema = schema or params.get("type", [""])[0]
 
-    to = _pick_default_contact(ctx, params.get("to", [""])[0])
-    if not to:
-        handler._json_response({"ok": False, "error": "无可用联系人"}, 400)
-        return
-
     try:
         data = json.loads(body) if body else {}
     except Exception:
@@ -448,7 +490,19 @@ def handle_webhook(handler, ctx, path, params, body):
         handler._json_response({"ok": False, "error": "无法解析 Webhook 内容"}, 400)
         return
 
-    result = _multicast_send(ctx, to, text, source=f"webhook:{schema or 'generic'}")
+    source = f"webhook:{schema or 'generic'}"
+    to = _pick_default_contact(
+        ctx,
+        params.get("to", [""])[0],
+        request_path="/api/webhook",
+        source=source,
+        message_len=len(text),
+    )
+    if not to:
+        handler._json_response({"ok": False, "error": "无可用联系人"}, 400)
+        return
+
+    result = _multicast_send(ctx, to, text, source=source)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -480,7 +534,13 @@ def handle_send_image(handler, ctx, params, body):
     else:
         image_data = body
 
-    to = _pick_default_contact(ctx, to or params.get("to", [""])[0])
+    to = _pick_default_contact(
+        ctx,
+        to or params.get("to", [""])[0],
+        request_path="/api/send_image",
+        source="image",
+        message_len=len(image_data or b""),
+    )
     if not to:
         handler._json_response({"ok": False, "error": "缺少 to 参数且无联系人"}, 400)
         return
@@ -493,3 +553,61 @@ def handle_send_image(handler, ctx, params, body):
 
     result = ctx.bridge.send_image(to, image_data)
     handler._json_response(result, 200 if result.get("ok") else 400)
+
+
+def handle_register_commands(handler, ctx, params, body):
+    """外部 Webhook 服务注册自定义命令到 /help 列表。"""
+    if not handler._check_api_token():
+        return
+
+    data = _load_json(handler, body)
+    if data is None:
+        return
+
+    commands = data.get("commands", [])
+    if not isinstance(commands, list) or not commands:
+        handler._json_response({"ok": False, "error": "需要 commands 数组"}, 400)
+        return
+
+    # 内置命令保护
+    builtin = {"/help", "/帮助", "/status", "/状态", "/pull", "/uid", "/retry", "/重试",
+               "/clear", "/清除", "/ai", "/keepalive", "/保活", "/mute"}
+    registered = []
+    for item in commands:
+        cmd = item.get("command", "").strip()
+        desc = item.get("description", "").strip()
+        if not cmd or not cmd.startswith("/"):
+            continue
+        if cmd.lower() in builtin or cmd.lower().startswith("/ai ") or cmd.lower().startswith("/keepalive "):
+            continue
+        ctx.bridge._webhook_commands[cmd] = desc or cmd
+        registered.append(cmd)
+
+    logger.info("外部命令注册: %s", registered)
+    handler._json_response({"ok": True, "registered": registered})
+
+
+def handle_unregister_commands(handler, ctx, params, body):
+    """注销已注册的外部命令。"""
+    if not handler._check_api_token():
+        return
+
+    data = _load_json(handler, body)
+    if data is None:
+        return
+
+    commands = data.get("commands", [])
+    removed = []
+    if not commands:
+        # 空数组 = 清空全部
+        removed = list(ctx.bridge._webhook_commands.keys())
+        ctx.bridge._webhook_commands.clear()
+    else:
+        for cmd in commands:
+            cmd = cmd.strip() if isinstance(cmd, str) else ""
+            if cmd in ctx.bridge._webhook_commands:
+                del ctx.bridge._webhook_commands[cmd]
+                removed.append(cmd)
+
+    logger.info("外部命令注销: %s", removed)
+    handler._json_response({"ok": True, "removed": removed})

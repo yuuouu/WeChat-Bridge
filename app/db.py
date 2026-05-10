@@ -18,8 +18,11 @@ logger = logging.getLogger(__name__)
 
 DB_FILE = os.environ.get("DB_FILE", "./data/messages.db")
 _active_db_file = DB_FILE  # 实际使用的路径（可被 init_db 覆盖）
+ACCOUNTS_DB_FILE = os.environ.get("ACCOUNTS_DB_FILE", os.path.join(os.path.dirname(DB_FILE) or ".", "accounts.db"))
+_active_accounts_db_file = ACCOUNTS_DB_FILE
 
 _conn: sqlite3.Connection | None = None
+_accounts_conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
 
 DEFAULT_DELIVERY_STATE = {
@@ -53,9 +56,23 @@ def _get_conn() -> sqlite3.Connection:
     return _conn
 
 
+def _get_accounts_conn() -> sqlite3.Connection:
+    """获取全局账号索引 SQLite 连接。"""
+    global _accounts_conn
+    if _accounts_conn is None:
+        os.makedirs(os.path.dirname(_active_accounts_db_file) or ".", exist_ok=True)
+        _accounts_conn = sqlite3.connect(_active_accounts_db_file, check_same_thread=False)
+        _accounts_conn.row_factory = sqlite3.Row
+        _accounts_conn.execute("PRAGMA journal_mode=WAL")
+        _accounts_conn.execute("PRAGMA synchronous=NORMAL")
+        _accounts_conn.execute("PRAGMA busy_timeout=5000")
+        _ensure_accounts_schema(_accounts_conn)
+    return _accounts_conn
+
+
 def close_db():
     """关闭全局连接，供测试或进程退出时调用。"""
-    global _conn
+    global _conn, _accounts_conn
     with _lock:
         if _conn is not None:
             try:
@@ -64,6 +81,13 @@ def close_db():
                 pass
             _conn.close()
             _conn = None
+        if _accounts_conn is not None:
+            try:
+                _accounts_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+            _accounts_conn.close()
+            _accounts_conn = None
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column_name: str, definition: str):
@@ -80,6 +104,164 @@ def _decode_meta(meta_json: str | None):
         return json.loads(meta_json)
     except Exception:
         return None
+
+
+def _encode_meta(meta: dict | None) -> str | None:
+    if meta is None:
+        return None
+    try:
+        return json.dumps(meta, ensure_ascii=False)
+    except Exception:
+        return None
+
+
+def _ensure_accounts_schema(conn: sqlite3.Connection):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bot_accounts (
+            bot_id          TEXT PRIMARY KEY,
+            ilink_user_id   TEXT DEFAULT '',
+            data_dir        TEXT NOT NULL,
+            base_url        TEXT DEFAULT '',
+            first_login_at  INTEGER NOT NULL,
+            last_login_at   INTEGER NOT NULL DEFAULT 0,
+            last_seen_at    INTEGER NOT NULL DEFAULT 0,
+            last_logout_at  INTEGER NOT NULL DEFAULT 0,
+            token_mtime     INTEGER NOT NULL DEFAULT 0,
+            status          TEXT NOT NULL DEFAULT 'active',
+            updated_at      INTEGER NOT NULL
+        )
+    """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bot_login_events (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            bot_id         TEXT NOT NULL,
+            ilink_user_id  TEXT DEFAULT '',
+            event          TEXT NOT NULL,
+            created_at     INTEGER NOT NULL,
+            data_dir       TEXT NOT NULL,
+            reason         TEXT DEFAULT '',
+            meta_json      TEXT DEFAULT NULL
+        )
+    """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_login_events_bot ON bot_login_events(bot_id, created_at DESC)")
+    conn.commit()
+
+
+def init_accounts_db(data_dir: str | None = None):
+    """初始化全局账号索引数据库。"""
+    global _active_accounts_db_file, _accounts_conn
+    db_file = os.path.join(data_dir, "accounts.db") if data_dir else ACCOUNTS_DB_FILE
+    if db_file != _active_accounts_db_file:
+        with _lock:
+            if _accounts_conn is not None:
+                _accounts_conn.close()
+                _accounts_conn = None
+            _active_accounts_db_file = db_file
+            logger.info("账号索引数据库路径切换为: %s", _active_accounts_db_file)
+    with _lock:
+        _get_accounts_conn()
+
+
+def record_bot_account_event(
+    *,
+    bot_id: str,
+    event: str,
+    data_dir: str,
+    ilink_user_id: str = "",
+    base_url: str = "",
+    reason: str = "",
+    meta: dict | None = None,
+    token_mtime: int = 0,
+    created_at: int | None = None,
+):
+    """记录 Bot 账号状态和登录/恢复/登出事件，不保存 token 明文。"""
+    if not bot_id:
+        return
+    now_ts = created_at or _now_ts()
+    account_status = "logged_out" if event == "logout" else "active"
+    login_at = now_ts if event == "login_confirmed" else 0
+    logout_at = now_ts if event == "logout" else 0
+    with _lock:
+        conn = _get_accounts_conn()
+        row = conn.execute("SELECT * FROM bot_accounts WHERE bot_id = ?", (bot_id,)).fetchone()
+        if row is None:
+            first_login_at = login_at or now_ts
+            last_login_at = login_at or 0
+            last_seen_at = now_ts
+            last_logout_at = logout_at
+        else:
+            first_login_at = row["first_login_at"] or login_at or now_ts
+            last_login_at = login_at or row["last_login_at"] or 0
+            last_seen_at = max(int(row["last_seen_at"] or 0), now_ts)
+            last_logout_at = logout_at or row["last_logout_at"] or 0
+            if not ilink_user_id:
+                ilink_user_id = row["ilink_user_id"] or ""
+            if not base_url:
+                base_url = row["base_url"] or ""
+            if not data_dir:
+                data_dir = row["data_dir"] or ""
+            if not token_mtime:
+                token_mtime = row["token_mtime"] or 0
+
+        conn.execute(
+            """
+            INSERT INTO bot_accounts (
+                bot_id, ilink_user_id, data_dir, base_url, first_login_at,
+                last_login_at, last_seen_at, last_logout_at, token_mtime, status, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bot_id) DO UPDATE SET
+                ilink_user_id = excluded.ilink_user_id,
+                data_dir = excluded.data_dir,
+                base_url = excluded.base_url,
+                first_login_at = excluded.first_login_at,
+                last_login_at = excluded.last_login_at,
+                last_seen_at = excluded.last_seen_at,
+                last_logout_at = excluded.last_logout_at,
+                token_mtime = excluded.token_mtime,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+        """,
+            (
+                bot_id,
+                ilink_user_id,
+                data_dir,
+                base_url,
+                first_login_at,
+                last_login_at,
+                last_seen_at,
+                last_logout_at,
+                token_mtime,
+                account_status,
+                now_ts,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO bot_login_events (bot_id, ilink_user_id, event, created_at, data_dir, reason, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+            (bot_id, ilink_user_id, event, now_ts, data_dir, reason, _encode_meta(meta)),
+        )
+        conn.commit()
+
+
+def get_bot_account(bot_id: str) -> dict | None:
+    with _lock:
+        row = _get_accounts_conn().execute("SELECT * FROM bot_accounts WHERE bot_id = ?", (bot_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_bot_login_events(bot_id: str) -> list[dict]:
+    with _lock:
+        rows = _get_accounts_conn().execute(
+            "SELECT * FROM bot_login_events WHERE bot_id = ? ORDER BY id", (bot_id,)
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _row_to_message(row: sqlite3.Row) -> dict:
@@ -233,6 +415,37 @@ def init_db(db_file: str = None):
             )
         """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contact_activity (
+                user_id                TEXT PRIMARY KEY,
+                bot_id                 TEXT DEFAULT '',
+                display_name           TEXT DEFAULT '',
+                first_seen_at          INTEGER NOT NULL,
+                last_inbound_at        INTEGER NOT NULL DEFAULT 0,
+                last_outbound_at       INTEGER NOT NULL DEFAULT 0,
+                last_context_token_at  INTEGER NOT NULL DEFAULT 0,
+                context_token_present  INTEGER NOT NULL DEFAULT 0,
+                updated_at             INTEGER NOT NULL
+            )
+        """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS default_recipient_decisions (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id                 TEXT DEFAULT '',
+                request_path           TEXT DEFAULT '',
+                source                 TEXT DEFAULT '',
+                selected_user_id       TEXT NOT NULL,
+                selected_display_name  TEXT DEFAULT '',
+                reason                 TEXT NOT NULL,
+                selected_at            INTEGER NOT NULL,
+                message_len            INTEGER NOT NULL DEFAULT 0,
+                title                  TEXT DEFAULT ''
+            )
+        """
+        )
 
         _ensure_column(conn, "messages", "media", "media TEXT DEFAULT NULL")
         _ensure_column(conn, "messages", "delivery_stage", "delivery_stage TEXT DEFAULT 'direct'")
@@ -247,6 +460,10 @@ def init_db(db_file: str = None):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_overflow_sessions_user ON overflow_sessions(user_id, status)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_pending_messages_session ON pending_messages(session_id, status, created_at)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_contact_activity_inbound ON contact_activity(last_inbound_at DESC)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_default_recipient_decisions_time ON default_recipient_decisions(selected_at DESC)"
         )
         conn.commit()
 
@@ -327,6 +544,137 @@ def get_message_count() -> int:
         conn = _get_conn()
         row = conn.execute("SELECT COUNT(*) FROM messages").fetchone()
         return row[0] if row else 0
+
+
+def get_latest_receive_times_by_user() -> dict[str, int]:
+    """按用户返回最近一条入站消息时间，用于联系人排序。"""
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT user_id, MAX(time) AS last_time FROM messages WHERE type = 'recv' GROUP BY user_id"
+        ).fetchall()
+    return {row["user_id"]: int(row["last_time"] or 0) for row in rows}
+
+
+def record_contact_activity(
+    *,
+    user_id: str,
+    bot_id: str = "",
+    display_name: str = "",
+    inbound_at: int | None = None,
+    outbound_at: int | None = None,
+    context_token_at: int | None = None,
+    now_ts: int | None = None,
+):
+    """记录联系人最近入站/出站/context_token 活动。"""
+    if not user_id:
+        return
+    now_ts = now_ts or _now_ts()
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute("SELECT * FROM contact_activity WHERE user_id = ?", (user_id,)).fetchone()
+        if row is None:
+            first_seen_at = inbound_at or outbound_at or context_token_at or now_ts
+            last_inbound_at = inbound_at or 0
+            last_outbound_at = outbound_at or 0
+            last_context_token_at = context_token_at or 0
+            context_token_present = 1 if context_token_at else 0
+        else:
+            first_seen_at = row["first_seen_at"] or inbound_at or outbound_at or context_token_at or now_ts
+            last_inbound_at = max(int(row["last_inbound_at"] or 0), inbound_at or 0)
+            last_outbound_at = max(int(row["last_outbound_at"] or 0), outbound_at or 0)
+            last_context_token_at = max(int(row["last_context_token_at"] or 0), context_token_at or 0)
+            context_token_present = 1 if (context_token_at or row["context_token_present"]) else 0
+            if not display_name:
+                display_name = row["display_name"] or ""
+            if not bot_id:
+                bot_id = row["bot_id"] or ""
+
+        conn.execute(
+            """
+            INSERT INTO contact_activity (
+                user_id, bot_id, display_name, first_seen_at, last_inbound_at,
+                last_outbound_at, last_context_token_at, context_token_present, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                bot_id = excluded.bot_id,
+                display_name = excluded.display_name,
+                first_seen_at = excluded.first_seen_at,
+                last_inbound_at = excluded.last_inbound_at,
+                last_outbound_at = excluded.last_outbound_at,
+                last_context_token_at = excluded.last_context_token_at,
+                context_token_present = excluded.context_token_present,
+                updated_at = excluded.updated_at
+        """,
+            (
+                user_id,
+                bot_id,
+                display_name,
+                first_seen_at,
+                last_inbound_at,
+                last_outbound_at,
+                last_context_token_at,
+                context_token_present,
+                now_ts,
+            ),
+        )
+        conn.commit()
+
+
+def get_contact_activity(user_id: str) -> dict | None:
+    with _lock:
+        row = _get_conn().execute("SELECT * FROM contact_activity WHERE user_id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def record_default_recipient_decision(
+    *,
+    bot_id: str = "",
+    request_path: str = "",
+    source: str = "",
+    selected_user_id: str,
+    selected_display_name: str = "",
+    reason: str = "latest_inbound_contact",
+    selected_at: int | None = None,
+    message_len: int = 0,
+    title: str = "",
+):
+    """记录未指定 to 时默认收件人的选择依据，不保存消息正文。"""
+    if not selected_user_id:
+        return
+    selected_at = selected_at or _now_ts()
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            """
+            INSERT INTO default_recipient_decisions (
+                bot_id, request_path, source, selected_user_id, selected_display_name,
+                reason, selected_at, message_len, title
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                bot_id,
+                request_path,
+                source,
+                selected_user_id,
+                selected_display_name,
+                reason,
+                selected_at,
+                int(message_len or 0),
+                title or "",
+            ),
+        )
+        conn.commit()
+
+
+def list_default_recipient_decisions(limit: int = 20) -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            "SELECT * FROM default_recipient_decisions ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def update_message_delivery_stage_for_pending_ids(pending_ids: list[int], stage: str):

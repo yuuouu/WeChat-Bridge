@@ -76,8 +76,8 @@ class BridgeDeliveryTests(unittest.TestCase):
         result = self.bridge.send("Alice", "hello-10")
         self.assertTrue(result["ok"])
         self.assertTrue(result["warning"])
-        self.assertIn("## ⚠️ 系统提醒", self.client.sent_texts[-1][1])
-        self.assertIn("- Bot 已连续发送 10 条通知", self.client.sent_texts[-1][1])
+        self.assertIn("## ⚠️ 微信 bot 10 条上限", self.client.sent_texts[-1][1])
+        self.assertIn("- 回复任意内容恢复消息发送", self.client.sent_texts[-1][1])
 
         summary = self.bridge.get_delivery_summary("uid-1")
         self.assertEqual(summary["status"], "WARNED")
@@ -128,6 +128,115 @@ class BridgeDeliveryTests(unittest.TestCase):
                 for message in messages
             )
         )
+
+    def test_bot_account_is_recorded_on_token_restore(self):
+        account = db.get_bot_account("bot-test")
+        events = db.list_bot_login_events("bot-test")
+
+        self.assertIsNotNone(account)
+        self.assertEqual(account["data_dir"], str(Path(self.tempdir.name) / "bot-test"))
+        self.assertEqual(account["status"], "active")
+        self.assertEqual(events[0]["event"], "token_restored")
+
+    def test_contacts_are_ordered_by_latest_activity(self):
+        self.bridge.contacts = {
+            "uid-old": "Old",
+            "uid-new": "New",
+            "uid-empty": "Empty",
+        }
+        self.bridge.activity_tracker = {
+            "uid-old": {"last_receive_time": 100, "reminded": False},
+            "uid-new": {"last_receive_time": 200, "reminded": False},
+        }
+
+        ordered = self.bridge.get_ordered_contacts()
+
+        self.assertEqual(list(ordered.keys()), ["uid-new", "uid-old", "uid-empty"])
+        self.assertEqual(self.bridge.get_default_contact(), "uid-new")
+        self.assertEqual(self.bridge.find_user_id("uid-new"), "uid-new")
+
+    def test_contact_order_ignores_newer_outbound_messages(self):
+        self.bridge.contacts = {
+            "uid-inbound": "Inbound",
+            "uid-outbound": "Outbound",
+        }
+        db.save_message(
+            {
+                "msg_id": "recv-new",
+                "type": "recv",
+                "contact": "Inbound",
+                "user_id": "uid-inbound",
+                "text": "hello",
+                "time": 200,
+            }
+        )
+        db.save_message(
+            {
+                "msg_id": "send-newer",
+                "type": "send",
+                "contact": "Outbound",
+                "user_id": "uid-outbound",
+                "text": "system push",
+                "time": 300,
+            }
+        )
+
+        ordered = self.bridge.get_ordered_contacts()
+
+        self.assertEqual(list(ordered.keys()), ["uid-inbound", "uid-outbound"])
+
+    def test_contact_activity_records_inbound_and_outbound(self):
+        user_id = "uid-activity"
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": user_id,
+                "from_user_nickname": "Activity",
+                "context_token": "ctx-activity",
+                "msg_id": "activity-1",
+                "item_list": [{"type": 1, "text_item": {"text": "hello"}}],
+            }
+        )
+        inbound = db.get_contact_activity(user_id)
+
+        self.assertEqual(inbound["display_name"], "Activity")
+        self.assertGreater(inbound["last_inbound_at"], 0)
+        self.assertGreater(inbound["last_context_token_at"], 0)
+        self.assertEqual(inbound["context_token_present"], 1)
+
+        self.bridge.send("Activity", "reply")
+        outbound = db.get_contact_activity(user_id)
+        self.assertGreater(outbound["last_outbound_at"], 0)
+
+    def test_default_recipient_decision_is_recorded_without_message_body(self):
+        self.bridge.record_default_recipient_decision(
+            "uid-1",
+            request_path="/api/send",
+            source="api",
+            title="Title",
+            message_len=123,
+        )
+
+        decisions = db.list_default_recipient_decisions()
+
+        self.assertEqual(decisions[0]["selected_user_id"], "uid-1")
+        self.assertEqual(decisions[0]["selected_display_name"], "Alice")
+        self.assertEqual(decisions[0]["reason"], "latest_inbound_contact")
+        self.assertEqual(decisions[0]["message_len"], 123)
+        self.assertNotIn("text", decisions[0])
+
+    def test_load_contacts_clears_previous_account_state_when_cache_missing(self):
+        self.bridge.contacts = {"uid-old": "Old"}
+        self.bridge.context_tokens = {"uid-old": "ctx-old"}
+        self.bridge.activity_tracker = {"uid-old": {"last_receive_time": 100, "reminded": False}}
+
+        self.client.bot_id = "bot-new"
+        self.bridge._setup_data_dir()
+        self.bridge._load_contacts()
+
+        self.assertEqual(self.bridge.contacts, {})
+        self.assertEqual(self.bridge.context_tokens, {})
+        self.assertEqual(self.bridge.activity_tracker, {})
 
     def test_builtin_command_replies_are_markdown_formatted(self):
         cases = [
@@ -305,8 +414,8 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(len(buffered), 1)
         self.assertEqual(buffered[0]["meta"]["blocked_reason"], "quota_10")
         self.assertTrue(buffered[0]["meta"]["limit_warning"])
-        self.assertIn("## ⚠️ 系统提醒", buffered[0]["text"])
-        self.assertIn("- Bot 已连续发送 10 条通知", buffered[0]["text"])
+        self.assertIn("## ⚠️ 微信 bot 10 条上限", buffered[0]["text"])
+        self.assertIn("- 回复任意内容恢复消息发送", buffered[0]["text"])
 
     def test_read_timeout_is_recorded_as_uncertain_delivery(self):
         def _raise_timeout(to_user_id: str, text: str, context_token: str = "") -> dict:
@@ -452,6 +561,183 @@ class BridgeDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(triggered, [{"text": "hello bridge", "is_command": False}])
+
+
+class TestMuteFeature(BridgeDeliveryTests):
+    """Tests for /mute command and its interaction with outbound delivery."""
+
+    def _activate_mute(self, minutes: int = 60):
+        """Helper: set mute via command channel (source='command')."""
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-mute",
+                "msg_id": "mute-cmd",
+                "item_list": [{"type": 1, "text_item": {"text": f"/mute {minutes}"}}],
+            }
+        )
+
+    def test_mute_command_reply_is_not_buffered(self):
+        """After /mute activation, the confirmation reply itself must be delivered directly
+        (source='command' is exempt from mute check)."""
+        self._activate_mute(30)
+        sent = [t for _, t, *_ in self.client.sent_texts]
+        self.assertTrue(
+            any("静默模式已开启" in t for t in sent),
+            "Mute confirmation should be sent directly, not buffered",
+        )
+
+    def test_mute_buffers_api_messages(self):
+        """Outbound API messages sent during mute period are buffered (ok=True, buffered=True)."""
+        self._activate_mute(60)
+        result = self.bridge.send("Alice", "这条应该被缓存", source="api")
+        self.assertTrue(result.get("buffered"), "API message should be buffered during mute")
+        self.assertNotIn("error", result)
+
+    def test_mute_buffers_ai_messages(self):
+        """AI-sourced messages are also buffered during mute."""
+        self._activate_mute(60)
+        result = self.bridge.send("Alice", "AI 回复", source="ai")
+        self.assertTrue(result.get("buffered"), "AI message should be buffered during mute")
+
+    def test_mute_keepalive_bypasses_mute(self):
+        """Keepalive reminders must go through even when muted."""
+        self._activate_mute(60)
+        result = self.bridge.send("Alice", "保活提醒", source="keepalive")
+        self.assertTrue(result["ok"])
+
+    def test_mute_duration_30_minutes(self):
+        """Plain integer is treated as minutes."""
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-mute",
+                "msg_id": "mute-30",
+                "item_list": [{"type": 1, "text_item": {"text": "/mute 30"}}],
+            }
+        )
+        mute_ts = self.bridge._mute_until.get("uid-1", 0)
+        self.assertGreater(mute_ts, 0)
+        import time
+        expected = time.time() + 30 * 60
+        self.assertAlmostEqual(mute_ts, expected, delta=5)
+
+    def test_mute_duration_2h(self):
+        """'2h' parses to 120 minutes."""
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-mute",
+                "msg_id": "mute-2h",
+                "item_list": [{"type": 1, "text_item": {"text": "/mute 2h"}}],
+            }
+        )
+        mute_ts = self.bridge._mute_until.get("uid-1", 0)
+        import time
+        expected = time.time() + 120 * 60
+        self.assertAlmostEqual(mute_ts, expected, delta=5)
+
+    def test_mute_duration_1_5h(self):
+        """'1.5h' parses to 90 minutes."""
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-mute",
+                "msg_id": "mute-1h30",
+                "item_list": [{"type": 1, "text_item": {"text": "/mute 1.5h"}}],
+            }
+        )
+        mute_ts = self.bridge._mute_until.get("uid-1", 0)
+        import time
+        expected = time.time() + 90 * 60
+        self.assertAlmostEqual(mute_ts, expected, delta=5)
+
+    def test_mute_duration_30m(self):
+        """'30m' suffix parses to 30 minutes."""
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-mute",
+                "msg_id": "mute-30m",
+                "item_list": [{"type": 1, "text_item": {"text": "/mute 30m"}}],
+            }
+        )
+        mute_ts = self.bridge._mute_until.get("uid-1", 0)
+        import time
+        expected = time.time() + 30 * 60
+        self.assertAlmostEqual(mute_ts, expected, delta=5)
+
+    def test_incoming_message_clears_mute(self):
+        """Any incoming message from the user automatically clears mute."""
+        self._activate_mute(60)
+        mute_ts = self.bridge._mute_until.get("uid-1", 0)
+        self.assertGreater(mute_ts, 0, "Mute should be active after /mute command")
+
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-clear",
+                "msg_id": "msg-clear",
+                "item_list": [{"type": 1, "text_item": {"text": "随便说点什么"}}],
+            }
+        )
+        self.assertEqual(self.bridge._mute_until.get("uid-1", 0), 0)
+
+    def test_mute_status_no_args(self):
+        """'/mute' with no args returns current status (not active)."""
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-mute",
+                "msg_id": "mute-query",
+                "item_list": [{"type": 1, "text_item": {"text": "/mute"}}],
+            }
+        )
+        sent = [t for _, t, *_ in self.client.sent_texts]
+        self.assertTrue(
+            any("静默模式" in t for t in sent),
+            "Status query should reply with mute status info",
+        )
+
+    def test_mute_status_when_active(self):
+        """'/mute' with no args while muted shows active status — tested via _handle_command
+        directly because process_message clears mute on any inbound message before routing."""
+        self._activate_mute(60)
+        # Verify mute is set
+        self.assertGreater(self.bridge._mute_until.get("uid-1", 0), 0)
+        # Query status directly through the command handler (not via process_message which clears mute)
+        reply = self.bridge._handle_command("/mute", "uid-1")
+        self.assertIn("开启中", reply, "Direct command status should show mute is active")
+
+    def test_mute_invalid_duration_returns_help(self):
+        """'/mute abc' returns usage help, does not activate mute."""
+        self.bridge.process_message(
+            {
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "from_user_nickname": "Alice",
+                "context_token": "ctx-mute",
+                "msg_id": "mute-invalid",
+                "item_list": [{"type": 1, "text_item": {"text": "/mute abc"}}],
+            }
+        )
+        self.assertEqual(self.bridge._mute_until.get("uid-1", 0), 0)
+        sent = [t for _, t, *_ in self.client.sent_texts]
+        self.assertTrue(any("用法" in t for t in sent))
 
 
 if __name__ == "__main__":

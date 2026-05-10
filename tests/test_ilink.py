@@ -68,6 +68,7 @@ class TokenPersistenceTests(unittest.TestCase):
         self.assertEqual(client2.bot_id, "test-token")
         self.assertEqual(client2.user_id, "user-123")
         self.assertEqual(client2.get_updates_buf, "buf-cursor-123")
+        self.assertGreater(client2.get_token_mtime(), 0)
 
     def test_load_token_without_user_id_keeps_backward_compatibility(self):
         Path(ilink.TOKEN_FILE).write_text(

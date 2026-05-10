@@ -1,0 +1,5 @@
+{
+  "my-project": "/path/to/my-project",
+  "backend-api": "/Users/yourname/code/backend-api",
+  "mobile-app": "/Users/yourname/code/mobile-app"
+}

@@ -73,6 +73,8 @@ class DeliveryMixin:
             return "24h 窗口失效"
         if blocked_reason == "api_limit":
             return "上游限制(ret=-2)"
+        if blocked_reason == "muted":
+            return "静默模式"
         return "无"
 
     def _is_window_limit_error(self, exc: Exception) -> bool:
@@ -83,20 +85,10 @@ class DeliveryMixin:
         return isinstance(exc, requests.exceptions.ReadTimeout) or "Read timed out" in str(exc)
 
     def _build_limit_warning(self, for_pull: bool = False) -> str:
-        if for_pull:
-            return (
-                "\n\n---\n\n"
-                "## ⚠️ 系统提醒\n\n"
-                "- 本次补拉已再次触发微信接收上限\n"
-                "- 剩余缓存消息已暂停发送\n"
-                "- 请回复任意内容后再次发送 `/pull` 继续拉取"
-            )
         return (
             "\n\n---\n\n"
-            "## ⚠️ 系统提醒\n\n"
-            "- Bot 已连续发送 10 条通知\n"
-            "- 已触发微信接收上限，后续消息将暂停发送\n"
-            "- 请回复任意内容解除限制并恢复接收"
+            "## ⚠️ 微信 bot 10 条上限\n\n"
+            "- 回复任意内容恢复消息发送，后续消息将自动缓存，可发送 `/pull` 拉取"
         )
 
     # ── Overflow Session 管理 ──
@@ -173,13 +165,20 @@ class DeliveryMixin:
             meta["title"] = title
         if extra_meta:
             meta.update(extra_meta)
+        now_ts = int(time.time())
+        db.record_contact_activity(
+            user_id=user_id,
+            bot_id=self.client.get_bot_id() or "",
+            display_name=contact_name,
+            outbound_at=now_ts,
+        )
         self._record_message(
             {
                 "type": "send",
                 "contact": contact_name,
                 "user_id": user_id,
                 "text": text,
-                "time": int(time.time()),
+                "time": now_ts,
                 "msg_id": f"{msg_prefix}_{uuid.uuid4().hex[:10]}",
                 "media": media_name,
                 "delivery_stage": delivery_stage,
@@ -292,6 +291,23 @@ class DeliveryMixin:
             now_ts = int(time.time())
             state = self._get_delivery_state(user_id)
 
+            # 静默模式检查（keepalive / command / system 不受 mute 影响）
+            mute_ts = self._mute_until.get(user_id, 0)
+            if mute_ts and now_ts < mute_ts and source not in ("keepalive", "command", "system"):
+                if allow_buffer:
+                    return self._buffer_message(
+                        user_id=user_id,
+                        contact_name=contact_name,
+                        text=text,
+                        reason="muted",
+                        source=source,
+                        title=title,
+                        media_name=media_name,
+                    )
+                from datetime import datetime
+                unmute_str = datetime.fromtimestamp(mute_ts).strftime("%H:%M")
+                return {"ok": False, "error": f"静默模式中，{unmute_str} 后恢复。"}
+
             if self._is_window_expired(user_id, state, now_ts):
                 if allow_buffer:
                     return self._buffer_message(
@@ -319,7 +335,7 @@ class DeliveryMixin:
                         title=title,
                         media_name=media_name,
                     )
-                return {"ok": False, "error": "已连续发送 10 条消息，请等待用户回复后再继续发送。"}
+                return {"ok": False, "error": "已连续发送 10 条消息，请等待用户回复后发送 /pull 拉取缓存消息。"}
 
             next_count = current_count + 1
             warning_appended = False

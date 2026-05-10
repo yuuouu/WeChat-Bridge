@@ -60,13 +60,18 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self._poll_thread: threading.Thread | None = None
         self.ai_manager = None
         self._consecutive_send_count: dict[str, dict] = {}
+        self._webhook_commands: dict[str, str] = {}  # 外部服务注册的命令 {"/rj": "开始日记录入"}
+        self._mute_until: dict[str, float] = {}  # 用户静默截止时间 {user_id: timestamp}
         self._outbound_lock = threading.Lock()
         self._contacts_lock = threading.Lock()
         self._setup_data_dir()
+        if self.client.logged_in:
+            self.record_account_event("token_restored", reason="startup")
         self._load_contacts()
 
     def _setup_data_dir(self, bot_id: str = None):
         """根据 bot_id 设置数据目录，实现多账号数据隔离。"""
+        db.init_accounts_db(DATA_BASE)
         bid = bot_id or self.client.get_bot_id()
         if bid:
             self._data_dir = os.path.join(DATA_BASE, bid)
@@ -80,9 +85,38 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         db.init_db(os.path.join(self._data_dir, "messages.db"))
         media.set_media_dir(os.path.join(self._data_dir, "media"))
 
+    def record_account_event(
+        self,
+        event: str,
+        *,
+        reason: str = "",
+        bot_id: str = None,
+        ilink_user_id: str = None,
+        base_url: str = None,
+        meta: dict | None = None,
+    ):
+        """记录 Bot 账号登录态事件，不保存 token 明文。"""
+        resolved_bot_id = bot_id or self.client.get_bot_id()
+        if not resolved_bot_id:
+            return
+        db.record_bot_account_event(
+            bot_id=resolved_bot_id,
+            ilink_user_id=ilink_user_id if ilink_user_id is not None else (getattr(self.client, "user_id", "") or ""),
+            event=event,
+            data_dir=getattr(self, "_data_dir", os.path.join(DATA_BASE, resolved_bot_id)),
+            base_url=base_url if base_url is not None else (getattr(self.client, "base_url", "") or ""),
+            reason=reason,
+            meta=meta,
+            token_mtime=self.client.get_token_mtime() if hasattr(self.client, "get_token_mtime") else 0,
+        )
+
     # ── 联系人缓存 ──
 
     def _load_contacts(self):
+        self.contacts = {}
+        self.context_tokens = {}
+        self.activity_tracker = {}
+
         if os.path.exists(self._contacts_file):
             try:
                 with open(self._contacts_file, encoding="utf-8") as fh:
@@ -107,11 +141,69 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             except Exception:
                 pass
 
+    def _latest_contact_times(self) -> dict[str, int]:
+        try:
+            latest_times = db.get_latest_receive_times_by_user()
+        except Exception as exc:
+            logger.debug("读取联系人最近入站时间失败: %s", exc)
+            latest_times = {}
+
+        for state in db.list_delivery_states():
+            try:
+                last_user_message_at = int(state.get("last_user_message_at") or 0)
+            except (AttributeError, TypeError, ValueError):
+                last_user_message_at = 0
+            user_id = state.get("user_id")
+            if user_id and last_user_message_at > latest_times.get(user_id, 0):
+                latest_times[user_id] = last_user_message_at
+
+        for user_id, activity in self.activity_tracker.items():
+            try:
+                last_receive_time = int(activity.get("last_receive_time") or 0)
+            except (AttributeError, TypeError, ValueError):
+                last_receive_time = 0
+            if last_receive_time > latest_times.get(user_id, 0):
+                latest_times[user_id] = last_receive_time
+        return latest_times
+
+    def get_ordered_contacts(self) -> dict[str, str]:
+        """联系人按最近入站时间倒序返回。"""
+        latest_times = self._latest_contact_times()
+        indexed_items = list(enumerate(self.contacts.items()))
+        indexed_items.sort(key=lambda item: (-latest_times.get(item[1][0], 0), item[0]))
+        return dict(contact for _, contact in indexed_items)
+
+    def get_default_contact(self) -> str:
+        """返回默认联系人 user_id，按最近入站优先。"""
+        for user_id in self.get_ordered_contacts():
+            return user_id
+        return ""
+
+    def record_default_recipient_decision(
+        self,
+        selected_user_id: str,
+        *,
+        request_path: str = "",
+        source: str = "",
+        title: str = "",
+        message_len: int = 0,
+    ):
+        db.record_default_recipient_decision(
+            bot_id=self.client.get_bot_id() or "",
+            request_path=request_path,
+            source=source,
+            selected_user_id=selected_user_id,
+            selected_display_name=self._contact_name(selected_user_id),
+            reason="latest_inbound_contact",
+            message_len=message_len,
+            title=title,
+        )
+
     def _save_contacts(self):
         with self._contacts_lock:
             os.makedirs(self._data_dir, exist_ok=True)
             with open(self._contacts_file, "w", encoding="utf-8") as fh:
-                json.dump(self.contacts, fh, ensure_ascii=False, indent=2)
+                json.dump(self.get_ordered_contacts(), fh, ensure_ascii=False, indent=2)
 
             ctx_file = os.path.join(self._data_dir, "context_tokens.json")
             with open(ctx_file, "w", encoding="utf-8") as fh:
@@ -130,6 +222,24 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             self.contacts[user_id] = name
             self._save_contacts()
             logger.info("新联系人: %s → %s", user_id, name)
+
+    def _record_contact_activity(
+        self,
+        user_id: str,
+        *,
+        display_name: str = "",
+        inbound_at: int | None = None,
+        outbound_at: int | None = None,
+        context_token_at: int | None = None,
+    ):
+        db.record_contact_activity(
+            user_id=user_id,
+            bot_id=self.client.get_bot_id() or "",
+            display_name=display_name or self.contacts.get(user_id, ""),
+            inbound_at=inbound_at,
+            outbound_at=outbound_at,
+            context_token_at=context_token_at,
+        )
 
     def _get_webhook_config(self) -> dict:
         current = cfg.load_config()
@@ -157,6 +267,8 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         """通过名称或 ID 查找 user_id。"""
         if not name_or_id:
             return None
+        if name_or_id in self.contacts:
+            return name_or_id
         if "@im.wechat" in name_or_id:
             return name_or_id
         for uid, display_name in self.contacts.items():
@@ -296,19 +408,35 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self._update_contact(from_user, display_name)
 
         should_save = False
+        activity_at = int(time.time())
+        context_token_at = None
         if from_user and context_token and self.context_tokens.get(from_user) != context_token:
             self.context_tokens[from_user] = context_token
+            context_token_at = activity_at
             should_save = True
 
         if from_user and text:
-            now_ts = int(time.time())
+            now_ts = activity_at
             self.activity_tracker[from_user] = {
                 "last_receive_time": now_ts,
                 "reminded": False,
             }
+            self._mute_until.pop(from_user, None)
             self._mark_user_recovered(from_user, now_ts)
             logger.info("用户 [%s] 有新入站消息，已恢复发送窗口", from_user[:20])
             should_save = True
+            self._record_contact_activity(
+                from_user,
+                display_name=display_name or self._contact_name(from_user),
+                inbound_at=now_ts,
+                context_token_at=context_token_at,
+            )
+        elif from_user and context_token_at:
+            self._record_contact_activity(
+                from_user,
+                display_name=display_name or self._contact_name(from_user),
+                context_token_at=context_token_at,
+            )
 
         if should_save:
             self._save_contacts()
@@ -478,7 +606,18 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 continue
 
             try:
+                old_bot_id = getattr(self.client, "bot_id", "")
+                old_user_id = getattr(self.client, "user_id", "")
+                old_base_url = getattr(self.client, "base_url", "")
                 msgs = self.client.get_updates(timeout=35)
+                if old_bot_id and not self.client.logged_in:
+                    self.record_account_event(
+                        "auth_error",
+                        reason="token_invalid",
+                        bot_id=old_bot_id,
+                        ilink_user_id=old_user_id or "",
+                        base_url=old_base_url or "",
+                    )
                 consecutive_errors = 0
                 for msg in msgs:
                     try:

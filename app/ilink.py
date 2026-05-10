@@ -163,6 +163,13 @@ class ILinkClient:
                 indent=2,
             )
 
+    def get_token_mtime(self) -> int:
+        """返回 token 文件修改时间，用于账号审计。"""
+        try:
+            return int(os.path.getmtime(TOKEN_FILE))
+        except OSError:
+            return 0
+
     def clear_token(self):
         """清除登录态"""
         self.bot_token = None

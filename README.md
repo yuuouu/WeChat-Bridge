@@ -263,6 +263,7 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 | [API 接口参考](docs/api-reference.md) | 完整 API、青龙面板 / iStoreOS 集成、Webhook 适配器 |
 | [异步回写集成指南](docs/webhook-async-reply.md) | 外部 Webhook 接入流程与调试建议 |
 | [Webhook 示例](docs/webhook-examples.md) | 微信日记收集器完整搭建示例 |
+| [Bridge Code Agent](docs/bridge-code-agent.md) | 通过微信远程操控 Mac 上的 AI CLI（Gemini / Claude / Codex） |
 | [工作原理](docs/architecture.md) | iLink 协议桥接时序图与核心流程解析 |
 | [更新日志](docs/CHANGELOG.md) | 版本变更记录 |
 

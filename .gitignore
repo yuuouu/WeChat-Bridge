@@ -3,6 +3,9 @@ data-token.json
 *.token
 .env
 
+# === 本地专属配置（包含本机路径，不入库）===
+examples/project_map.json
+
 # === 运行时数据（容器内生成）===
 data/
 

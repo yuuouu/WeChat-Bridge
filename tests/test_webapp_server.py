@@ -47,6 +47,7 @@ class _FakeBridge:
         self._running = True
         self.ag_inbox = []
         self.sent = []
+        self.default_recipient_decisions = []
         self.ai_manager = None
         self.recent_messages = ["stale-message"]
         self._consecutive_send_count = {"uid-1": {"count": 1}}
@@ -79,6 +80,18 @@ class _FakeBridge:
                 "active_overflow_session_id": None,
             }
         }
+
+    def get_ordered_contacts(self):
+        return self.contacts
+
+    def get_default_contact(self):
+        return next(iter(self.get_ordered_contacts()), "")
+
+    def record_default_recipient_decision(self, selected_user_id, **kwargs):
+        self.default_recipient_decisions.append((selected_user_id, kwargs))
+
+    def record_account_event(self, event, **kwargs):
+        self.last_account_event = (event, kwargs)
 
     def _setup_data_dir(self):
         self.setup_data_dir_called = True
@@ -251,6 +264,25 @@ class WebAppServerTests(unittest.TestCase):
         data = json.loads(body)
         self.assertTrue(data["ok"])
         self.assertEqual(self.bridge.sent, [("Alice", "hello", "api", "")])
+
+    def test_api_send_without_to_uses_default_contact(self):
+        self.bridge.contacts = {"uid-new": "New", "uid-old": "Old"}
+        payload = json.dumps({"text": "hello"}).encode("utf-8")
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.bridge.sent, [("uid-new", "hello", "api", "")])
+        self.assertEqual(self.bridge.default_recipient_decisions[0][0], "uid-new")
+        self.assertEqual(self.bridge.default_recipient_decisions[0][1]["source"], "api")
+        self.assertEqual(self.bridge.default_recipient_decisions[0][1]["message_len"], 5)
 
     def test_api_push_post_json_composes_title_and_normalizes_markdown(self):
         payload = json.dumps(
