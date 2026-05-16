@@ -29,7 +29,7 @@ const REPO = 'yuuouu/WeChat-Bridge';
 const GITHUB_RAW = `https://raw.githubusercontent.com/${REPO}/main`;
 const GITHUB_ARCHIVE = `https://github.com/${REPO}/archive/refs/heads/main.tar.gz`;
 const GITHUB_ARCHIVE_ZIP = `https://github.com/${REPO}/archive/refs/heads/main.zip`;
-const GITHUB_API = `https://api.github.com/repos/${REPO}/commits/main`;
+const GITHUB_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const CACHE_TTL = 600;
 
 export default {
@@ -46,14 +46,17 @@ export default {
       });
     }
 
-    // ── /stats ── 统计面板
+    // ── /stats ── 统计面板（需 ?token=yuu）
     if (path === '/stats') {
+      if (url.searchParams.get('token') !== 'yuu') {
+        return new Response('Forbidden', { status: 403 });
+      }
       return handleStats(env);
     }
 
     // ── /install.sh ── 安装脚本代理
     if (path === '/install.sh') {
-      await bump(env, 'dl:install');
+      await bump(env, 'dl:install:sh');
       const resp = await fetch(`${GITHUB_RAW}/scripts/install.sh`, {
         headers: { 'User-Agent': 'WB-Proxy' },
       });
@@ -64,17 +67,21 @@ export default {
         url.origin + '/install.sh'
       );
       script = script.replace(
-        'https://github.com/${REPO}/archive/refs/heads/main.tar.gz',
+        `https://github.com/${REPO}/archive/refs/heads/main.tar.gz`,
         url.origin + '/archive/main.tar.gz'
       );
       return new Response(script, {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=300' },
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+          'Access-Control-Allow-Origin': '*',
+        },
       });
     }
 
     // ── /install.ps1 ── Windows 安装脚本代理
     if (path === '/install.ps1') {
-      await bump(env, 'dl:install');
+      await bump(env, 'dl:install:ps1');
       const resp = await fetch(`${GITHUB_RAW}/scripts/install.ps1`, {
         headers: { 'User-Agent': 'WB-Proxy' },
       });
@@ -84,8 +91,16 @@ export default {
         /https:\/\/raw\.githubusercontent\.com\/yuuouu\/WeChat-Bridge\/main\/scripts\/install\.ps1/g,
         url.origin + '/install.ps1'
       );
+      script = script.replace(
+        `https://github.com/${REPO}/archive/refs/heads/main.zip`,
+        url.origin + '/archive/main.zip'
+      );
       return new Response(script, {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=300' },
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+          'Access-Control-Allow-Origin': '*',
+        },
       });
     }
 
@@ -113,10 +128,10 @@ export default {
     // 读缓存
     if (env.COUNTER) {
       try {
-        const cached = await env.COUNTER.get('github:latest_commit');
+        const cached = await env.COUNTER.get('github:latest_release');
         if (cached) {
           return new Response(cached, {
-            headers: { 'Content-Type': 'application/json', 'X-Cache': 'HIT' },
+            headers: { 'Content-Type': 'application/json', 'X-Cache': 'HIT', 'Access-Control-Allow-Origin': '*' },
           });
         }
       } catch (e) {}
@@ -127,18 +142,25 @@ export default {
       const resp = await fetch(GITHUB_API, {
         headers: { 'User-Agent': 'WB-Proxy', 'Accept': 'application/vnd.github.v3+json' },
       });
-      const body = await resp.text();
-      if (resp.status === 200 && env.COUNTER) {
-        try { await env.COUNTER.put('github:latest_commit', body, { expirationTtl: CACHE_TTL }); } catch (e) {}
+      if (resp.status === 200) {
+        const json = await resp.json();
+        const slim = JSON.stringify({ tag_name: json.tag_name, published_at: json.published_at, body: json.body });
+        if (env.COUNTER) {
+          try { await env.COUNTER.put('github:latest_release', slim, { expirationTtl: CACHE_TTL }); } catch (e) {}
+        }
+        return new Response(slim, {
+          headers: { 'Content-Type': 'application/json', 'X-Cache': 'MISS', 'Access-Control-Allow-Origin': '*' },
+        });
       }
-      return new Response(body, {
+      const errBody = await resp.text();
+      return new Response(errBody, {
         status: resp.status,
-        headers: { 'Content-Type': 'application/json', 'X-Cache': 'MISS' },
+        headers: { 'Content-Type': 'application/json', 'X-Cache': 'MISS', 'Access-Control-Allow-Origin': '*' },
       });
     } catch (e) {
       return new Response(JSON.stringify({ error: e.message }), {
         status: 502,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
       });
     }
   },
@@ -146,10 +168,10 @@ export default {
 
 // ── 匿名遥测处理 ──
 // 仅接受白名单字段，丢弃一切未知数据
-const ALLOWED_FIELDS = ['v', 'os', 'arch', 'py', 'mode', 'features'];
+const ALLOWED_FIELDS = ['v', 'prev_v', 'os', 'arch', 'py', 'mode', 'features'];
 
 async function handleTelemetry(request, env) {
-  if (!env.COUNTER) return new Response('ok');
+  if (!env.COUNTER) return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
   try {
     const data = await request.json();
     const today = new Date().toISOString().slice(0, 10);
@@ -170,7 +192,7 @@ async function handleTelemetry(request, env) {
       }
     }
   } catch (e) {}
-  return new Response('ok');
+  return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
 }
 
 // ── 源码包 24h 边缘缓存 ──
@@ -210,6 +232,7 @@ async function fetchAndCacheArchive(request, env, ctx, archiveUrl, contentType, 
 }
 
 // ── 计数器 ──
+// 只写日维度，total 在 /stats 里从 daily 加总，节省 50% KV 写操作
 async function bump(env, prefix) {
   if (!env.COUNTER) return;
   try {
@@ -217,9 +240,6 @@ async function bump(env, prefix) {
     const key = `${prefix}:${today}`;
     const val = parseInt(await env.COUNTER.get(key) || '0');
     await env.COUNTER.put(key, String(val + 1), { expirationTtl: 180 * 86400 });
-    const tk = `${prefix}:total`;
-    const tv = parseInt(await env.COUNTER.get(tk) || '0');
-    await env.COUNTER.put(tk, String(tv + 1));
   } catch (e) {}
 }
 
@@ -237,18 +257,36 @@ async function handleStats(env) {
     const ds = d.toISOString().slice(0, 10);
     daily[ds] = {
       version_check: parseInt(await env.COUNTER.get(`ping:${ds}`) || '0'),
-      install: parseInt(await env.COUNTER.get(`dl:install:${ds}`) || '0'),
+      install_sh: parseInt(await env.COUNTER.get(`dl:install:sh:${ds}`) || '0'),
+      install_ps1: parseInt(await env.COUNTER.get(`dl:install:ps1:${ds}`) || '0'),
       archive: parseInt(await env.COUNTER.get(`dl:archive:${ds}`) || '0'),
     };
   }
 
+  // 读取 telemetry 维度分布（累计，键自动 180 天过期）
+  const telemetry = {};
+  try {
+    const { keys } = await env.COUNTER.list({ prefix: 't:' });
+    for (const { name } of keys) {
+      const parts = name.split(':');
+      if (parts.length < 4) continue;
+      const field = parts[1];
+      const value = parts[2];
+      const count = parseInt(await env.COUNTER.get(name) || '0');
+      if (!telemetry[field]) telemetry[field] = {};
+      telemetry[field][value] = (telemetry[field][value] || 0) + count;
+    }
+  } catch (e) {}
+
+  const days = Object.values(daily);
   return new Response(JSON.stringify({
-    total: {
-      version_check: parseInt(await env.COUNTER.get('ping:total') || '0'),
-      install: parseInt(await env.COUNTER.get('dl:install:total') || '0'),
-      archive: parseInt(await env.COUNTER.get('dl:archive:total') || '0'),
+    total_7d: {
+      version_check: days.reduce((s, d) => s + d.version_check, 0),
+      install_sh:    days.reduce((s, d) => s + d.install_sh, 0),
+      install_ps1:   days.reduce((s, d) => s + d.install_ps1, 0),
+      archive:       days.reduce((s, d) => s + d.archive, 0),
     },
     daily,
-    _note: 'Telemetry data (t:* keys) is stored in KV but not exposed here for brevity.',
+    telemetry,
   }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 }

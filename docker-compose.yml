@@ -7,14 +7,34 @@ services:
       - "5200:5200"
     volumes:
       - ./data:/data
+      - ./examples:/app/examples
+      - ./app:/app
+      - ../../docker_data/qinglong/data/scripts:/qinglong_scripts:ro
+      # AI CLI 工具：挂载宿主机工作区、node 运行时和全局包
+      - /mnt/sata1-4/AI/workspace:/mnt/sata1-4/AI/workspace
+      - /mnt/sata1-4/AI/node:/mnt/sata1-4/AI/node:ro
+      - /mnt/sata1-4/AI/npm-global:/mnt/sata1-4/AI/npm-global:ro
+      - /root/.gemini:/root/.gemini
+      - /root/.claude:/root/.claude:ro
     environment:
       - PORT=5200
       - TOKEN_FILE=/data/token.json
       - DATA_DIR=/data
-      - MARKDOWN_MODE=  # 可选：normalize 整理普通通知为 Markdown；plain 降级为纯文本；留空默认按 Markdown 发送
-      - WEBHOOK_URL=  # 可选：收到消息时主动 POST 推送的目标地址（例如 Dify/FastGPT Webhook）
-      - API_TOKEN=    # 可选：API 接口鉴权 Token，设置后需要 Bearer Token 才能调用 /api/send 等接口
+      - MARKDOWN_MODE=  # 可选：normalize / plain / 留空
+      - WEBHOOK_URL=    # 可选：收到消息时 POST 推送目标地址
+      - API_TOKEN=      # 可选：API 鉴权 Token
       - TZ=Asia/Shanghai
+      # 使用宿主机 node v22（与 npm-global 安装版本匹配），避免 v24 兼容问题
+      - PATH=/mnt/sata1-4/AI/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin:/sbin:/mnt/sata1-4/AI/npm-global/bin
+      - NODE_PATH=/mnt/sata1-4/AI/npm-global/lib/node_modules
+      # 代理：容器出网经 sing-box docker-mixed-in (172.17.0.1:2080)
+      - HTTPS_PROXY=http://172.17.0.1:2080
+      - HTTP_PROXY=http://172.17.0.1:2080
+      - NO_PROXY=localhost,127.0.0.1,192.168.100.0/24,172.17.0.0/16,172.24.0.0/16
+      # Gemini CLI 无人值守模式（跳过 workspace 信任交互提示）
+      - GEMINI_CLI_TRUST_WORKSPACE=true
+      # 跳过原生 keychain（容器内无 D-Bus/secret-service，keytar.setPassword 会挂起）
+      - GEMINI_FORCE_FILE_STORAGE=true
     logging:
       driver: json-file
       options:
