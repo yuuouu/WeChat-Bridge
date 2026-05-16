@@ -363,7 +363,8 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                     logger.warning("video_item 缺少解密参数: keys=%s", list(video_item.keys()))
             else:
                 parts.append(f"[未知类型:{item_type}]")
-        return " ".join(parts) if parts else "[空消息]"
+        res = " ".join(parts) if parts else "[空消息]"
+        return res.strip() if parts else res
 
     def _trigger_webhook(self, from_user: str, from_name: str, text: str, msg: dict, *, is_command: bool = False):
         """将消息通过标准 Webhook 转发给外部系统。"""
@@ -374,7 +375,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         command_args = ""
         if is_command and text.startswith("/"):
             parts = text.strip().split(maxsplit=1)
-            command_name = parts[0]
+            command_name = parts[0].lower()
             command_args = parts[1] if len(parts) > 1 else ""
         payload = {
             "source": "wechat-bridge",

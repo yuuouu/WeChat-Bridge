@@ -68,6 +68,8 @@ PROVIDERS = {
     },
 }
 
+DEFAULT_WEBHOOK_URL = "http://127.0.0.1:18082/webhook"
+
 DEFAULT_CONFIG = {
     "enabled": False,
     "provider": "openai",
@@ -80,7 +82,7 @@ DEFAULT_CONFIG = {
     "usage": {},
     "keepalive_remind_minutes": 1380,  # 0=关闭, 60~1430=用户最后消息后N分钟发送提醒
     "webhook_enabled": True,
-    "webhook_url": "",
+    "webhook_url": DEFAULT_WEBHOOK_URL,
     "webhook_mode": "all_messages",
     "webhook_timeout": 5,
     "telemetry_enabled": False,

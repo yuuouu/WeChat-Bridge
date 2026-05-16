@@ -45,6 +45,9 @@ BRIDGE_API_TOKEN = os.environ.get("BRIDGE_API_TOKEN", "").strip()
 SESSION_TIMEOUT = int(os.environ.get("SESSION_TIMEOUT_MINUTES", "30")) * 60
 CLI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", "180"))
 ALLOWED_USERS: set[str] = {u.strip() for u in os.environ.get("ALLOWED_USERS", "").split(",") if u.strip()}
+# iStoreOS/OpenWRT 以 root 运行，claude --dangerously-skip-permissions 拒绝 root 执行
+# 设置此变量为非 root 用户名（如 claude_ai），命令将通过 su 切换身份执行
+CLAUDE_NONROOT_USER = os.environ.get("CLAUDE_NONROOT_USER", "").strip()
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_MAP_FILE = _SCRIPT_DIR / "project_map.json"
@@ -94,10 +97,15 @@ def _build_cmd(backend: str, prompt: str, cwd: str, *, resume: bool) -> list[str
 
     if backend == "claude":
         # JSON 模式：response 含 result / usage / total_cost_usd
-        cmd = [_find_bin("claude"), "-p", prompt, "--dangerously-skip-permissions", "--output-format", "json"]
+        inner = [_find_bin("claude"), "-p", prompt, "--dangerously-skip-permissions", "--output-format", "json"]
         if resume:
-            cmd += ["-c"]
-        return cmd
+            inner += ["-c"]
+        if CLAUDE_NONROOT_USER:
+            # iStoreOS 以 root 运行时，claude 拒绝 --dangerously-skip-permissions
+            # 通过 su 切换到非 root 用户执行，同时嵌入 cd 以保留工作目录
+            cmd_str = " ".join(shlex.quote(a) for a in inner)
+            return ["su", "-s", "/bin/sh", "-c", f"cd {shlex.quote(cwd)} && {cmd_str}", CLAUDE_NONROOT_USER]
+        return inner
 
     if backend == "codex":
         base_flags = ["--dangerously-bypass-approvals-and-sandbox", "--color", "never", "-C", cwd]

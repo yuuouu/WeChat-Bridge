@@ -188,8 +188,9 @@ def render_logged_in():
 
     <div id="webhookSettingsGroup" style="display: none;">
       <div class="form-group">
-        <label class="form-label">Webhook 地址</label>
-        <input class="form-input" id="webhookUrl" placeholder="https://example.com/webhook">
+        <label class="form-label">Webhook 地址 (已由 WebhookManager 接管)</label>
+        <input class="form-input" id="webhookUrl" readonly style="background: #333; cursor: not-allowed; color: #888;">
+        <div style="color:#666; font-size:11px; margin-top:4px;">插件系统强制启用，自动由 WebhookManager (端口 18082) 处理。</div>
       </div>
       <div class="form-group">
         <label class="form-label">转发模式</label>
@@ -393,8 +394,8 @@ def render_logged_in():
         document.getElementById('aiBaseUrl').value = cfg.base_url || '';
         document.getElementById('aiPrompt').value = cfg.system_prompt || '';
         document.getElementById('aiHistory').value = cfg.max_history || 10;
-        document.getElementById('webhookUrl').value = cfg.webhook_url || '';
-        document.getElementById('webhookMode').value = cfg.webhook_mode || 'unknown_command';
+        document.getElementById('webhookUrl').value = cfg.webhook_url || 'http://127.0.0.1:18082/webhook';
+        document.getElementById('webhookMode').value = cfg.webhook_mode || 'all_messages';
         document.getElementById('webhookTimeout').value = cfg.webhook_timeout || 5;
 
         renderNotifyToggle();

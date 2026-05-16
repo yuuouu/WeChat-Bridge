@@ -213,6 +213,12 @@ class CommandMixin:
                     return "## ❌ AI 助手\n\n- **状态**：已关闭"
             return "## ❓ 用法\n\n- 查看状态：`/ai`\n- 开启：`/ai on`\n- 关闭：`/ai off`"
 
+        # 检查是否为已注册的扩展指令
+        if self._webhook_commands:
+            base_cmd = cmd.split()[0]
+            if base_cmd in self._webhook_commands:
+                return f"{MAGIC_WEBHOOK_COMMAND_PREFIX}{text}"
+
         if self._should_forward_unknown_command():
             return f"{MAGIC_WEBHOOK_COMMAND_PREFIX}{text}"
         return f"## ❓ 未知指令\n\n- **收到**：{_md_inline(text)}\n- 发送 `/help` 查看可用指令"

@@ -30,13 +30,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 try:
     import websockets
 except ImportError:
-    print("缺少依赖，请先安装: pip3 install websockets")
-    exit(1)
+    raise ImportError("缺少依赖，请先安装: pip3 install websockets")
 
 HOST = os.environ.get("WEBHOOK_LISTEN_HOST", "0.0.0.0")
 PORT = int(os.environ.get("WEBHOOK_LISTEN_PORT", "18082"))
@@ -286,33 +285,39 @@ def handle_incoming(payload: dict):
     threading.Thread(target=_run_async, daemon=True).start()
 
 
-class WebhookHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", "0"))
-        raw_body = self.rfile.read(content_length).decode("utf-8", "replace")
-        try:
-            payload = json.loads(raw_body) if raw_body else {}
-        except json.JSONDecodeError:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b'{"ok":false,"error":"invalid json"}')
-            return
+class CDPAgentPlugin:
+    name = "bridge-cdp-agent"
 
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b'{"ok":true}')
+    @property
+    def commands(self) -> list[str]:
+        return []
 
-        threading.Thread(target=handle_incoming, args=(payload,), daemon=True).start()
+    def get_command_specs(self) -> list[dict]:
+        return []
 
-    def log_message(self, format, *args):
+    def has_session(self, user_id: str) -> bool:
+        return False
+
+    def handle(self, payload: dict) -> None:
+        handle_incoming(payload)
+
+    def on_start(self) -> None:
         pass
 
+    def on_stop(self) -> None:
+        pass
+
+
+PLUGIN_CLASS = CDPAgentPlugin
 
 if __name__ == "__main__":
-    _log("startup", listen=f"http://{HOST}:{PORT}/webhook", bridge_base_url=BRIDGE_BASE_URL, cdp_port=CDP_PORT)
+    _SCRIPT_DIR = Path(__file__).resolve().parent
+    import sys
 
-    try:
-        ThreadingHTTPServer((HOST, PORT), WebhookHandler).serve_forever()
-    finally:
-        pass
+    sys.path.insert(0, str(_SCRIPT_DIR))
+    from webhook_manager import WebhookManager
+
+    _log("startup", bridge_base_url=BRIDGE_BASE_URL, cdp_port=CDP_PORT)
+    mgr = WebhookManager()
+    mgr.load_plugin(CDPAgentPlugin())
+    mgr.run()

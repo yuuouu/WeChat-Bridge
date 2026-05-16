@@ -588,11 +588,11 @@ def handle_register_commands(handler, ctx, params, body):
     }
     registered = []
     for item in commands:
-        cmd = item.get("command", "").strip()
+        cmd = item.get("command", "").strip().lower()
         desc = item.get("description", "").strip()
         if not cmd or not cmd.startswith("/"):
             continue
-        if cmd.lower() in builtin or cmd.lower().startswith("/ai ") or cmd.lower().startswith("/keepalive "):
+        if cmd in builtin or cmd.startswith("/ai ") or cmd.startswith("/keepalive "):
             continue
         ctx.bridge._webhook_commands[cmd] = desc or cmd
         registered.append(cmd)
