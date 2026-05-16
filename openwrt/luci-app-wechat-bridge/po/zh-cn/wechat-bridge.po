@@ -44,6 +44,12 @@ msgstr "API Token"
 msgid "Markdown Mode"
 msgstr "Markdown 模式"
 
+msgid "Webhook Manager Port"
+msgstr "插件系统端口"
+
+msgid "Qinglong Scripts Path"
+msgstr "青龙脚本路径"
+
 msgid "Markdown"
 msgstr "Markdown"
 

@@ -91,6 +91,17 @@ markdown_mode:value("plain", translate("Plain Text"))
 markdown_mode.default = "markdown"
 markdown_mode.rmempty = false
 
+webhook_port = s:option(Value, "webhook_port", translate("Webhook Manager Port"))
+webhook_port.default = "18082"
+webhook_port.datatype = "port"
+webhook_port.rmempty = false
+webhook_port.description = translate("Port for the internal Webhook Manager / Plugin System")
+
+ql_scripts_path = s:option(Value, "ql_scripts_path", translate("Qinglong Scripts Path"))
+ql_scripts_path.placeholder = "/mnt/sda1/qinglong/data/scripts"
+ql_scripts_path.rmempty = true
+ql_scripts_path.description = translate("Path to Qinglong scripts for plugins to use (Read-only)")
+
 install = s:option(Button, "_install", translate("Install / Rebuild Container"))
 install.inputstyle = "apply"
 function install.write(self, section)

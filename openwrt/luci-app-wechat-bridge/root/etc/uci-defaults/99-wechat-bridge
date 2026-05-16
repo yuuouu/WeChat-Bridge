@@ -31,6 +31,7 @@ set_default port 5200
 set_default image_name ghcr.io/yuuouu/wechat-bridge
 set_default image_tag latest
 set_default markdown_mode markdown
+set_default webhook_port 18082
 
 if [ -z "$(uci -q get wechat-bridge.config.api_token)" ]; then
 	uci set "wechat-bridge.config.api_token=$(generate_token)"

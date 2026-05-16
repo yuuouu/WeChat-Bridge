@@ -7,6 +7,7 @@ DEFAULT_PORT="5200"
 DEFAULT_IMAGE_NAME="ghcr.io/yuuouu/wechat-bridge"
 DEFAULT_IMAGE_TAG="latest"
 DEFAULT_MARKDOWN_MODE="markdown"
+DEFAULT_WEBHOOK_PORT="18082"
 
 uci_get() {
 	uci -q get "${CONFIG}.${SECTION}.${1}" 2>/dev/null
@@ -20,12 +21,15 @@ load_config() {
 	image_tag="$(uci_get image_tag)"
 	api_token="$(uci_get api_token)"
 	markdown_mode="$(uci_get markdown_mode)"
+	webhook_port="$(uci_get webhook_port)"
+	ql_scripts_path="$(uci_get ql_scripts_path)"
 	tz="$(uci -q get system.@system[0].zonename 2>/dev/null)"
 
 	[ -n "$port" ] || port="$DEFAULT_PORT"
 	[ -n "$image_name" ] || image_name="$DEFAULT_IMAGE_NAME"
 	[ -n "$image_tag" ] || image_tag="$DEFAULT_IMAGE_TAG"
 	[ -n "$markdown_mode" ] || markdown_mode="$DEFAULT_MARKDOWN_MODE"
+	[ -n "$webhook_port" ] || webhook_port="$DEFAULT_WEBHOOK_PORT"
 	[ -n "$tz" ] || tz="UTC"
 }
 
@@ -45,12 +49,20 @@ do_install() {
 	docker pull "${image_name}:${image_tag}" || return 1
 	docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
+	local ql_vol=""
+	if [ -n "$ql_scripts_path" ] && [ -d "$ql_scripts_path" ]; then
+		ql_vol="-v ${ql_scripts_path}:/qinglong_scripts:ro"
+	fi
+
 	docker run -d \
 		--name "$CONTAINER" \
 		--restart=unless-stopped \
 		-p "${port}:5200" \
+		-p "${webhook_port}:18082" \
 		-v "${config_path}:/data" \
+		$ql_vol \
 		-e "PORT=5200" \
+		-e "WEBHOOK_LISTEN_PORT=18082" \
 		-e "TOKEN_FILE=/data/token.json" \
 		-e "DATA_DIR=/data" \
 		-e "AI_CONFIG_FILE=/data/ai_config.json" \

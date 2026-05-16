@@ -123,6 +123,8 @@ require_grep 's:option\(ListValue, "markdown_mode", translate\("Markdown Mode"\)
 require_grep 'markdown_mode:value\("markdown", translate\("Markdown"\)\)' "$LUCI_DIR/luasrc/model/cbi/wechat-bridge.lua"
 require_grep 'markdown_mode:value\("normalize", translate\("Normalize"\)\)' "$LUCI_DIR/luasrc/model/cbi/wechat-bridge.lua"
 require_grep 'markdown_mode:value\("plain", translate\("Plain Text"\)\)' "$LUCI_DIR/luasrc/model/cbi/wechat-bridge.lua"
+require_grep 'webhook_port = s:option\(Value, "webhook_port"' "$LUCI_DIR/luasrc/model/cbi/wechat-bridge.lua"
+require_grep 'ql_scripts_path = s:option\(Value, "ql_scripts_path"' "$LUCI_DIR/luasrc/model/cbi/wechat-bridge.lua"
 
 note "checking LuCI translations"
 for msgid in \
@@ -137,6 +139,8 @@ for msgid in \
 	"Image Tag" \
 	"API Token" \
 	"Markdown Mode" \
+	"Webhook Manager Port" \
+	"Qinglong Scripts Path" \
 	"Install / Rebuild Container" \
 	"Start" \
 	"Stop" \
@@ -153,7 +157,7 @@ require_grep 'IMAGE_NAME: \$\{\{ github\.repository \}\}' "$ROOT_DIR/.github/wor
 require_grep 'platforms: linux/amd64,linux/arm64' "$ROOT_DIR/.github/workflows/docker-publish.yml"
 require_grep 'include \$\(TOPDIR\)/rules\.mk' "$META_DIR/Makefile"
 require_grep '^include ../../meta\.mk$' "$META_DIR/Makefile"
-require_grep '^PKG_VERSION:=1\.1\.0$' "$META_DIR/Makefile"
+require_grep '^PKG_VERSION:=1\.2\.0$' "$META_DIR/Makefile"
 APP_VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$ROOT_DIR/app/version.py")
 META_VERSION=$(sed -n 's/^PKG_VERSION:=//p' "$META_DIR/Makefile")
 LUCI_VERSION=$(sed -n 's/^PKG_VERSION:=//p' "$LUCI_DIR/Makefile")
@@ -389,6 +393,7 @@ grep -F 'wechat-bridge.config.port=5200' "$STATE" >/dev/null || fail "uci-defaul
 grep -F 'wechat-bridge.config.image_name=ghcr.io/yuuouu/wechat-bridge' "$STATE" >/dev/null || fail "uci-defaults did not default image_name"
 grep -F 'wechat-bridge.config.image_tag=latest' "$STATE" >/dev/null || fail "uci-defaults did not default image_tag"
 grep -F 'wechat-bridge.config.markdown_mode=markdown' "$STATE" >/dev/null || fail "uci-defaults did not default markdown_mode"
+grep -F 'wechat-bridge.config.webhook_port=18082' "$STATE" >/dev/null || fail "uci-defaults did not default webhook_port"
 if grep -F 'wechat-bridge.config.config_path=' "$STATE" >/dev/null; then
 	fail "uci-defaults must not write config_path"
 fi
@@ -498,8 +503,10 @@ grep -F 'rm [-f] [wechat-bridge]' "$DOCKER_LOG" >/dev/null || fail "install did 
 grep -F '[--name] [wechat-bridge]' "$DOCKER_LOG" >/dev/null || fail "docker run missing container name"
 grep -F '[--restart=unless-stopped]' "$DOCKER_LOG" >/dev/null || fail "docker run missing restart policy"
 grep -F '[-p] [5300:5200]' "$DOCKER_LOG" >/dev/null || fail "docker run missing port mapping"
+grep -F '[-p] [18082:18082]' "$DOCKER_LOG" >/dev/null || fail "docker run missing webhook port mapping"
 grep -F "[-v] [$TMP_DIR/data:/data]" "$DOCKER_LOG" >/dev/null || fail "docker run missing data mount"
 grep -F '[-e] [PORT=5200]' "$DOCKER_LOG" >/dev/null || fail "docker run missing PORT env"
+grep -F '[-e] [WEBHOOK_LISTEN_PORT=18082]' "$DOCKER_LOG" >/dev/null || fail "docker run missing WEBHOOK_LISTEN_PORT env"
 grep -F '[-e] [TOKEN_FILE=/data/token.json]' "$DOCKER_LOG" >/dev/null || fail "docker run missing TOKEN_FILE env"
 grep -F '[-e] [DATA_DIR=/data]' "$DOCKER_LOG" >/dev/null || fail "docker run missing DATA_DIR env"
 grep -F '[-e] [AI_CONFIG_FILE=/data/ai_config.json]' "$DOCKER_LOG" >/dev/null || fail "docker run missing AI_CONFIG_FILE env"
