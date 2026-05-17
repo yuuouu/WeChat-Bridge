@@ -7,13 +7,26 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = os.environ.get("AI_CONFIG_FILE", "./data/ai_config.json")
-_config_lock = threading.Lock()  # 防止多线程并发写 JSON 文件撕裂
-
 _config_cache: dict | None = None
-_config_cache_at: float = 0.0
-_config_cache_file: str = ""  # 缓存对应的 CONFIG_FILE 路径，路径变化时自动失效
-_CONFIG_CACHE_TTL = 5.0  # 秒
+_config_cache_mtime: float = 0.0
+_config_cache_file: str = ""
+
+
+def _resolve_config_file() -> str:
+    """优先使用 config.json，向后兼容 ai_config.json"""
+    base_dir = os.path.dirname(os.environ.get("AI_CONFIG_FILE", "./data/ai_config.json"))
+    new_config = os.path.join(base_dir, "config.json")
+    old_config = os.path.join(base_dir, "ai_config.json")
+
+    if os.path.exists(new_config):
+        return new_config
+    if os.path.exists(old_config):
+        return old_config
+    return os.environ.get("AI_CONFIG_FILE", old_config)
+
+
+CONFIG_FILE = _resolve_config_file()
+_config_lock = threading.Lock()
 
 # 厂商预设：{provider_id: {name, base_url, models: [{id, name}]}}
 PROVIDERS = {
@@ -90,19 +103,45 @@ DEFAULT_CONFIG = {
 
 
 def _invalidate_config_cache():
-    global _config_cache, _config_cache_at, _config_cache_file
+    global _config_cache, _config_cache_mtime, _config_cache_file
     _config_cache = None
-    _config_cache_at = 0.0
+    _config_cache_mtime = 0.0
     _config_cache_file = ""
 
 
-def load_config() -> dict:
-    """加载 AI 配置，优先从文件读取，环境变量可覆盖（5s TTL 缓存）"""
-    global _config_cache, _config_cache_at, _config_cache_file
-    import time as _time
+def validate_config(cfg: dict) -> dict:
+    """简单的 schema 校验与格式化"""
+    valid = cfg.copy()
+    valid["enabled"] = bool(valid.get("enabled"))
+    valid["webhook_enabled"] = bool(valid.get("webhook_enabled"))
+    valid["telemetry_enabled"] = bool(valid.get("telemetry_enabled"))
 
-    now = _time.monotonic()
-    if _config_cache is not None and _config_cache_file == CONFIG_FILE and now - _config_cache_at < _CONFIG_CACHE_TTL:
+    try:
+        valid["webhook_timeout"] = max(1, min(30, int(valid.get("webhook_timeout", 5))))
+    except (TypeError, ValueError):
+        valid["webhook_timeout"] = 5
+
+    if valid.get("webhook_mode") not in ("unknown_command", "all_messages"):
+        valid["webhook_mode"] = "all_messages"
+
+    try:
+        valid["keepalive_remind_minutes"] = max(-1, int(valid.get("keepalive_remind_minutes", 1380)))
+    except (TypeError, ValueError):
+        valid["keepalive_remind_minutes"] = 1380
+
+    return valid
+
+
+def load_config() -> dict:
+    """加载配置，优先从文件读取，基于 mtime 热加载"""
+    global _config_cache, _config_cache_mtime, _config_cache_file
+
+    try:
+        current_mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else 0.0
+    except OSError:
+        current_mtime = 0.0
+
+    if _config_cache is not None and _config_cache_file == CONFIG_FILE and _config_cache_mtime == current_mtime:
         return _config_cache.copy()
 
     config = DEFAULT_CONFIG.copy()
@@ -147,13 +186,8 @@ def load_config() -> dict:
         except ValueError:
             logger.warning("无效的 WEBHOOK_TIMEOUT: %s", os.environ["WEBHOOK_TIMEOUT"])
 
-    if config.get("webhook_mode") not in ("unknown_command", "all_messages"):
-        config["webhook_mode"] = "all_messages"
-
-    try:
-        config["webhook_timeout"] = max(1, min(30, int(config.get("webhook_timeout", 5))))
-    except (TypeError, ValueError):
-        config["webhook_timeout"] = 5
+    # 应用 schema 校验
+    config = validate_config(config)
 
     # 向后兼容：将旧的双布尔迁移为新字段，如有旧字段则自动升级保存一次
     needs_save = False
@@ -175,7 +209,7 @@ def load_config() -> dict:
         save_config(config)
 
     _config_cache = config.copy()
-    _config_cache_at = _time.monotonic()
+    _config_cache_mtime = current_mtime
     _config_cache_file = CONFIG_FILE
     return config
 
@@ -192,4 +226,5 @@ def save_config(config: dict):
 
 def get_provider_info(provider_id: str) -> dict:
     """获取厂商预设信息"""
-    return PROVIDERS.get(provider_id, PROVIDERS["openai"])
+    provider_id_lower = provider_id.lower() if provider_id else ""
+    return PROVIDERS.get(provider_id_lower, PROVIDERS["openai"])

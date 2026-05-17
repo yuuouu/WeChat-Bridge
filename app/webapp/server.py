@@ -23,6 +23,7 @@ GET_API_ROUTES = {
     "/api/qr_status": api_handlers.handle_qr_status,
     "/api/send": api_handlers.handle_send_get,
     "/api/push": api_handlers.handle_push_get,
+    "/api/events": api_handlers.handle_events,
 }
 
 POST_API_ROUTES = {

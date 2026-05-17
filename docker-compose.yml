@@ -9,7 +9,7 @@ services:
       - ./data:/data
       - ./examples:/app/examples
       - ./app:/app
-      - ../../docker_data/qinglong/data/scripts:/qinglong_scripts:ro
+      - /mnt/sata1-4/docker_data/qinglong/data/scripts:/qinglong_scripts:ro
       # AI CLI 工具：挂载宿主机工作区、node 运行时和全局包
       - /mnt/sata1-4/AI/workspace:/mnt/sata1-4/AI/workspace
       - /mnt/sata1-4/AI/node:/mnt/sata1-4/AI/node:ro

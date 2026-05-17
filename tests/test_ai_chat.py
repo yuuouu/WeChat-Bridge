@@ -52,13 +52,11 @@ class AIChatTests(unittest.TestCase):
     def test_chat_records_usage_and_trims_history(self):
         class _FakeResp:
             def raise_for_status(self):
-                return None
+                pass
 
-            def json(self):
-                return {
-                    "choices": [{"message": {"content": "reply"}}],
-                    "usage": {"total_tokens": 12},
-                }
+            def iter_lines(self):
+                yield b'data: {"choices": [{"delta": {"content": "reply"}}]}'
+                yield b""
 
         with patch("ai_chat.requests.post", return_value=_FakeResp()):
             self.assertEqual(self.manager.chat("u1", "hello"), "reply")
@@ -83,15 +81,13 @@ class AIChatTests(unittest.TestCase):
 
         class _FakeResp:
             def raise_for_status(self):
-                return None
+                pass
 
-            def json(self):
-                return {
-                    "choices": [{"message": {"content": "reply"}}],
-                    "usage": {"total_tokens": 12},
-                }
+            def iter_lines(self):
+                yield b'data: {"choices": [{"delta": {"content": "reply"}}]}'
+                yield b""
 
-        def fake_post(endpoint, json, headers, timeout):
+        def fake_post(endpoint, json, headers, timeout, stream):
             calls.append({"endpoint": endpoint, "json": json, "headers": headers, "timeout": timeout})
             return _FakeResp()
 
@@ -115,15 +111,13 @@ class AIChatTests(unittest.TestCase):
 
         class _FakeResp:
             def raise_for_status(self):
-                return None
+                pass
 
-            def json(self):
-                return {
-                    "choices": [{"message": {"content": "reply"}}],
-                    "usage": {"total_tokens": 12},
-                }
+            def iter_lines(self):
+                yield b'data: {"choices": [{"delta": {"content": "reply"}}]}'
+                yield b""
 
-        def fake_post(endpoint, json, headers, timeout):
+        def fake_post(endpoint, json, headers, timeout, stream):
             calls.append({"endpoint": endpoint, "json": json, "headers": headers, "timeout": timeout})
             return _FakeResp()
 

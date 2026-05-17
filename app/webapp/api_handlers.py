@@ -6,7 +6,9 @@ import base64
 import json
 import logging
 import mimetypes
+import queue
 import time
+import uuid
 from urllib.parse import parse_qs
 
 import config as cfg
@@ -625,3 +627,47 @@ def handle_unregister_commands(handler, ctx, params, body):
 
     logger.info("外部命令注销: %s", removed)
     handler._json_response({"ok": True, "removed": removed})
+
+
+def handle_events(handler, ctx, params):
+    if not handler._check_api_token():
+        return
+    if not ctx.client.logged_in:
+        handler._json_response({"ok": False, "error": "未登录"}, 401)
+        return
+
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Connection", "keep-alive")
+    handler.end_headers()
+
+    q = queue.Queue()
+
+    def _on_event(e):
+        q.put(e)
+
+    sid = str(uuid.uuid4())
+    from event_bus import EVENT_AI_REPLY_READY, EVENT_MESSAGE_RECEIVED, EVENT_MESSAGE_SENT
+
+    ctx.bridge.event_bus.subscribe(EVENT_MESSAGE_RECEIVED, _on_event, subscriber_id=sid)
+    ctx.bridge.event_bus.subscribe(EVENT_MESSAGE_SENT, _on_event, subscriber_id=sid)
+    ctx.bridge.event_bus.subscribe(EVENT_AI_REPLY_READY, _on_event, subscriber_id=sid)
+
+    try:
+        while True:
+            try:
+                event = q.get(timeout=15)
+                # Ensure no non-serializable objects in event.data
+                data_str = json.dumps({"event": event.name, "data": event.data}, ensure_ascii=False)
+                handler.wfile.write(f"data: {data_str}\n\n".encode())
+                handler.wfile.flush()
+            except queue.Empty:
+                handler.wfile.write(b": keepalive\n\n")
+                handler.wfile.flush()
+    except Exception as exc:
+        logger.debug("SSE 客户端断开连接: %s", exc)
+    finally:
+        ctx.bridge.event_bus.unsubscribe(EVENT_MESSAGE_RECEIVED, sid)
+        ctx.bridge.event_bus.unsubscribe(EVENT_MESSAGE_SENT, sid)
+        ctx.bridge.event_bus.unsubscribe(EVENT_AI_REPLY_READY, sid)

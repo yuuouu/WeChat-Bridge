@@ -9,13 +9,25 @@ AI 对话模块
 - Token 用量日统计
 """
 
+import json
 import logging
 from collections import OrderedDict
+from collections.abc import Generator
 from datetime import datetime
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_sse(line: bytes) -> dict | None:
+    line = line.strip()
+    if line.startswith(b"data: ") and line != b"data: [DONE]":
+        try:
+            return json.loads(line[6:])
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
 class AIChatManager:
@@ -68,31 +80,33 @@ class AIChatManager:
             del config["usage"][keys.pop(0)]
         self._save_config(config)
 
-    def chat(self, user_id: str, text: str) -> str:
+    def chat_stream(self, user_id: str, text: str) -> Generator[str, None, str]:
         """
-        处理一轮对话
-        Returns: AI 回复文本，或错误消息
+        流式处理一轮对话。
+        Yields: AI 回复的增量文本片段
+        Returns: 完整的 AI 回复
         """
         config = self._load_config()
 
         if not config.get("enabled"):
-            return ""  # AI 未启用，返回空表示不处理
+            return ""
 
         if not config.get("api_key"):
-            return "⚠️ AI 未配置 API Key，请在 Web 管理面板中设置。"
+            msg = "⚠️ AI 未配置 API Key，请在 Web 管理面板中设置。"
+            yield msg
+            return msg
 
         if not self._check_daily_limit(config):
-            return "⚠️ 今日 AI 调用额度已用尽，明天再试吧。"
+            msg = "⚠️ 今日 AI 调用额度已用尽，明天再试吧。"
+            yield msg
+            return msg
 
-        # 维护会话历史（加锁防并发写 RuntimeError）
         max_history = config.get("max_history", 10)
         with self._lock:
             history = self._get_history(user_id)
             history.append({"role": "user", "content": text})
-            # 截断历史
             if len(history) > max_history * 2:
                 history[:] = history[-(max_history * 2) :]
-            # 拷贝副本用于网络请求，避免长时间 I/O 期间被其他线程修改
             req_history = list(history)
 
         system_prompt = config.get("system_prompt", "你是一个有帮助的 AI 助手。")
@@ -106,38 +120,29 @@ class AIChatManager:
 
             provider_info = get_provider_info(provider)
             effective_url = config.get("base_url") or provider_info["base_url"]
+            is_anthropic = provider_info.get("sdk") == "anthropic"
 
-            if provider_info.get("sdk") == "anthropic":
-                # Claude 原生 REST API 调用（Anthropic Messages API）
-                headers = {
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                }
+            headers = {
+                "Content-Type": "application/json",
+            }
+            if is_anthropic:
+                headers["x-api-key"] = api_key
+                headers["anthropic-version"] = "2023-06-01"
                 payload = {
                     "model": model,
                     "max_tokens": 2048,
                     "system": system_prompt,
-                    "messages": req_history,  # Anthropic 不在 messages 里放 system
+                    "messages": req_history,
+                    "stream": True,
                 }
                 endpoint = f"{effective_url.rstrip('/')}/v1/messages"
-                resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
-                resp.raise_for_status()
-                data = resp.json()
-                reply = data.get("content", [{}])[0].get("text", "")
-                tokens_used = data.get("usage", {}).get("input_tokens", 0) + data.get("usage", {}).get(
-                    "output_tokens", 0
-                )
             else:
-                # OpenAI-compatible 厂商统一走 Chat Completions REST API
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                }
+                headers["Authorization"] = f"Bearer {api_key}"
                 payload = {
                     "model": model,
                     "messages": messages,
                     "temperature": provider_info.get("temperature", 0.7),
+                    "stream": True,
                 }
                 payload[provider_info.get("max_tokens_param", "max_tokens")] = 2048
                 payload.update(provider_info.get("extra_body", {}))
@@ -145,40 +150,86 @@ class AIChatManager:
                 if "chat/completions" not in endpoint:
                     endpoint = f"{endpoint.rstrip('/')}/chat/completions"
 
-                resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
-                resp.raise_for_status()
-                data = resp.json()
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=60, stream=True)
+            resp.raise_for_status()
 
-                msg_obj = data.get("choices", [{}])[0].get("message", {})
-                reply = msg_obj.get("content", "") or ""
+            full_reply = ""
+            reasoning_started = False
+            reasoning_ended = False
 
-                # 兼容 DeepSeek Reasoner 的思维链
-                reasoning = msg_obj.get("reasoning_content")
-                if reasoning:
-                    reply = f"【思考过程】\n{reasoning}\n\n{reply}"
+            for line in resp.iter_lines():
+                if not line:
+                    continue
 
-                tokens_used = data.get("usage", {}).get("total_tokens", 0)
+                chunk = _parse_sse(line)
+                if not chunk:
+                    continue
 
-            # ⚠️ 微信单条消息长度限制防爆
-            if len(reply) > 1500:
-                reply = reply[:1500] + "\n...(字数超限截断)"
+                if is_anthropic:
+                    if chunk.get("type") == "content_block_delta":
+                        delta = chunk.get("delta", {}).get("text", "")
+                        if delta:
+                            full_reply += delta
+                            yield delta
+                else:
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        reasoning = delta.get("reasoning_content", "")
 
-            # 记录助手回复到历史与记录用量（加锁防竞争）
+                        if reasoning:
+                            if not reasoning_started:
+                                reasoning_started = True
+                                yield "【思考过程】\n"
+                                full_reply += "【思考过程】\n"
+                            full_reply += reasoning
+                            yield reasoning
+
+                        if content:
+                            if reasoning_started and not reasoning_ended:
+                                reasoning_ended = True
+                                yield "\n\n"
+                                full_reply += "\n\n"
+                            full_reply += content
+                            yield content
+
+            # 记录历史与用量
             with self._lock:
-                history.append({"role": "assistant", "content": reply})
-            self._record_usage(config, tokens_used)
+                history.append({"role": "assistant", "content": full_reply})
+            # 对于 stream 模式，简单按照字数估算 tokens
+            estimated_tokens = len(text) + len(full_reply)
+            self._record_usage(config, estimated_tokens)
 
-            logger.info("AI 回复 [%s] (%s/%s, %d tokens): %s", user_id[:16], provider, model, tokens_used, reply[:80])
-            return reply
+            logger.info("AI 流式回复完成 [%s]: %s...", user_id[:16], full_reply[:30].replace("\n", " "))
+            return full_reply
 
         except Exception as e:
             logger.error("AI 调用失败 [%s]: %s", user_id[:16], e)
-            # 移除用户刚发的这条，避免污染历史
             with self._lock:
                 history = self._get_history(user_id)
                 if history and history[-1]["role"] == "user":
                     history.pop()
-            return f"⚠️ AI 暂时不可用: {str(e)[:100]}"
+            err_msg = f"⚠️ AI 暂时不可用: {str(e)[:100]}"
+            yield err_msg
+            return err_msg
+
+    def chat(self, user_id: str, text: str) -> str:
+        """
+        处理一轮对话（非流式，内部基于 stream 实现组合）
+        """
+        generator = self.chat_stream(user_id, text)
+        full_text = ""
+        try:
+            while True:
+                full_text += next(generator)
+        except StopIteration as e:
+            if e.value is not None:
+                full_text = e.value
+
+        if len(full_text) > 5200:
+            full_text = full_text[:5200] + "\n...(字数超限截断)"
+        return full_text
 
     def clear_history(self, user_id: str):
         """清除某用户的会话历史"""

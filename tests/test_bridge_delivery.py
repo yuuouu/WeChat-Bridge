@@ -66,7 +66,12 @@ class BridgeDeliveryTests(unittest.TestCase):
             os.environ["DATA_DIR"] = self._old_data_dir
             bridge_module.DATA_BASE = self._old_data_dir
         cfg.CONFIG_FILE = self._old_config_file
-        self.tempdir.cleanup()
+        try:
+            self.tempdir.cleanup()
+        except Exception as exc:
+            import logging
+
+            logging.warning(f"Failed to cleanup tempdir {self.tempdir.name}: {exc}")
 
     def test_tenth_message_appends_warning_and_creates_session(self):
         for idx in range(9):
@@ -239,6 +244,11 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(self.bridge.activity_tracker, {})
 
     def test_builtin_command_replies_are_markdown_formatted(self):
+        # Disable webhook to ensure we get the fallback "未知指令" reply
+        current_cfg = cfg.load_config()
+        current_cfg["webhook_enabled"] = False
+        cfg.save_config(current_cfg)
+
         cases = [
             ("/help", "## 📋 可用指令", "- `/status`"),
             ("/status", "## 🤖 WeChat Bridge", "### 运行状态"),
@@ -464,13 +474,15 @@ class BridgeDeliveryTests(unittest.TestCase):
                 "from_user_nickname": "Alice",
                 "context_token": "ctx-1",
                 "msg_id": "m1",
-                "item_list": [{"type": 1, "text_item": {"text": "/weather shanghai"}}],
+                "item_list": [{"type": 1, "text_item": {"text": "/random_unknown_cmd xyz"}}],
             }
         )
-        time.sleep(0.05)
+        deadline = time.time() + 1.0
+        while len(triggered) == 0 and time.time() < deadline:
+            time.sleep(0.05)
 
         self.assertEqual(len(triggered), 1)
-        self.assertEqual(triggered[0]["text"], "/weather shanghai")
+        self.assertEqual(triggered[0]["text"], "/random_unknown_cmd xyz")
         self.assertTrue(triggered[0]["is_command"])
         self.assertEqual(len(self.client.sent_texts), 0)
 

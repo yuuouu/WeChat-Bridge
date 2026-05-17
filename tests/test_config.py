@@ -23,6 +23,7 @@ class LoadConfigDefaultsTests(unittest.TestCase):
     """load_config 在无配置文件、无环境变量时应返回 DEFAULT_CONFIG。"""
 
     def setUp(self):
+        cfg._invalidate_config_cache()
         self.tempdir = tempfile.TemporaryDirectory()
         self._orig = cfg.CONFIG_FILE
         cfg.CONFIG_FILE = str(Path(self.tempdir.name) / "nonexist" / "ai_config.json")
@@ -47,6 +48,7 @@ class EnvOverrideTests(unittest.TestCase):
     """环境变量可以覆盖配置文件和默认值。"""
 
     def setUp(self):
+        cfg._invalidate_config_cache()
         self.tempdir = tempfile.TemporaryDirectory()
         self._orig = cfg.CONFIG_FILE
         cfg.CONFIG_FILE = str(Path(self.tempdir.name) / "ai_config.json")
@@ -99,6 +101,7 @@ class WebhookValidationTests(unittest.TestCase):
     """Webhook 参数校验边界场景。"""
 
     def setUp(self):
+        cfg._invalidate_config_cache()
         self.tempdir = tempfile.TemporaryDirectory()
         self._orig = cfg.CONFIG_FILE
         cfg.CONFIG_FILE = str(Path(self.tempdir.name) / "ai_config.json")
@@ -140,6 +143,7 @@ class KeepaliveMigrationTests(unittest.TestCase):
     """旧的双布尔字段应自动迁移到 keepalive_remind_minutes。"""
 
     def setUp(self):
+        cfg._invalidate_config_cache()
         self.tempdir = tempfile.TemporaryDirectory()
         self._orig = cfg.CONFIG_FILE
         cfg.CONFIG_FILE = str(Path(self.tempdir.name) / "ai_config.json")
@@ -175,6 +179,7 @@ class SaveConfigTests(unittest.TestCase):
     """save_config 应创建目录并正确写入 JSON。"""
 
     def setUp(self):
+        cfg._invalidate_config_cache()
         self.tempdir = tempfile.TemporaryDirectory()
         self._orig = cfg.CONFIG_FILE
 

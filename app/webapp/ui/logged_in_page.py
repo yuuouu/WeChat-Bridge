@@ -996,7 +996,21 @@ def render_logged_in():
     fetchServiceStatus();
     fetchContacts();
     fetchMsgs();
-    setInterval(fetchMsgs, 2000);
+
+    // SSE EventSource for real-time updates
+    const evtSource = new EventSource('/api/events');
+    evtSource.onmessage = function(e) {
+      if (e.data === ": keepalive") return;
+      try {
+        const payload = JSON.parse(e.data);
+        if (['message_received', 'message_sent', 'ai_reply_ready'].includes(payload.event)) {
+          fetchMsgs();
+        }
+      } catch (err) {}
+    };
+
+    // Fallback polling (less frequent)
+    setInterval(fetchMsgs, 15000);
     setInterval(fetchServiceStatus, 5000);
     setInterval(fetchContacts, 5000);
 
