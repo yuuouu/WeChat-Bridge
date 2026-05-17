@@ -28,8 +28,15 @@ from delivery import (  # noqa: F401 — re-export for backward compat
     WINDOW_DEADLINE_SECONDS,
     DeliveryMixin,
 )
+from event_bus import (
+    EVENT_MESSAGE_RECEIVED,
+    Event,
+    EventBus,
+)
 from ilink import ILinkClient
 from keepalive import KeepaliveMixin
+from plugin_base import PluginRegistry
+from webhook_manager import discover_and_register_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +75,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         if self.client.logged_in:
             self.record_account_event("token_restored", reason="startup")
         self._load_contacts()
+
+        self.event_bus = EventBus()
+        self.plugin_registry = PluginRegistry(self.event_bus, send_func=self.send)
+        discover_and_register_plugins(self.plugin_registry)
+        self.plugin_registry.start_all()
 
     def _setup_data_dir(self, bot_id: str = None):
         """根据 bot_id 设置数据目录，实现多账号数据隔离。"""
@@ -462,8 +474,19 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             with self._ag_inbox_lock:
                 self.ag_inbox.append({"from": from_name, "text": text})
 
+        # 派发基础消息事件
+        self.event_bus.publish(
+            Event(
+                EVENT_MESSAGE_RECEIVED,
+                {"from_user": from_user, "from_name": from_name, "text": text, "msg": msg, "media_paths": media_paths},
+            )
+        )
+
         if text.startswith("/"):
             cmd_reply = self._handle_command(text, from_user)
+            if cmd_reply == "":
+                # 插件已自行处理回复
+                return
             if cmd_reply == "__MAGIC_PULL__":
 
                 def _async_pull_worker():
@@ -506,21 +529,43 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 logger.error("指令回复失败: %s", result.get("error"))
             return
 
+        # 非命令消息触发旧 Webhook（兼容）
         self._trigger_webhook(from_user, from_name, text, msg)
+
+        # 插件持有该用户会话时（如日记录入中），跳过 AI
+        if self.plugin_registry.find_session_holder(from_user):
+            logger.debug("插件持有用户 [%s] 会话，跳过 AI", from_user[:16])
+            return
 
         if self.ai_manager and text and not text.startswith("/"):
 
             def _async_ai_worker(uid, msg_text):
                 try:
-                    ai_reply = self.ai_manager.chat(uid, msg_text)
-                    if ai_reply:
-                        result = self.send(uid, f"🤖 {ai_reply}", source="ai")
+                    self.send_typing(uid)
+                    chunk_buffer = ""
+                    first_send = True
+                    # 缓冲块，尽量一次性发送，防止碎消息刷屏，微信单条限制约 5200 字符
+                    for chunk in self.ai_manager.chat_stream(uid, msg_text):
+                        chunk_buffer += chunk
+                        # 超过 4500 字且遇到换行，或者极限达到 5000 字时，分段发送
+                        if len(chunk_buffer) >= 5000 or (len(chunk_buffer) >= 4500 and "\n\n" in chunk):
+                            prefix = "🤖 " if first_send else ""
+                            result = self.send(uid, f"{prefix}{chunk_buffer}", source="ai")
+                            if not result.get("ok"):
+                                logger.error("AI 后台回复片段失败 [%s]: %s", uid[:16], result.get("error"))
+                            first_send = False
+                            chunk_buffer = ""
+                            self.send_typing(uid)  # 继续打字状态
+
+                    if chunk_buffer:
+                        prefix = "🤖 " if first_send else ""
+                        result = self.send(uid, f"{prefix}{chunk_buffer}", source="ai")
                         if not result.get("ok"):
-                            logger.error("AI 后台回复失败 [%s]: %s", uid[:16], result.get("error"))
-                        else:
-                            logger.info("AI 已异步回复 [%s]: %s", uid[:16], ai_reply[:80])
+                            logger.error("AI 后台回复最后片段失败 [%s]: %s", uid[:16], result.get("error"))
+
+                    logger.info("AI 流式回复已发送完毕 [%s]", uid[:16])
                 except Exception as exc:
-                    logger.error("AI 后台回复失败 [%s]: %s", uid[:16], exc)
+                    logger.error("AI 后台回复处理失败 [%s]: %s", uid[:16], exc)
                     try:
                         self.send(uid, f"⚠️ AI 响应异常: {str(exc)[:50]}", source="system")
                     except Exception:
@@ -649,6 +694,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
 
     def stop(self):
         self._running = False
+        if getattr(self, "plugin_registry", None):
+            try:
+                self.plugin_registry.stop_all()
+            except Exception as e:
+                logger.error("停止插件失败: %s", e)
         if getattr(self, "_poll_thread", None):
             self._poll_thread.join(timeout=10)
         if getattr(self, "_keepalive_thread", None):

@@ -55,6 +55,17 @@ class CommandMixin:
                 lines.append("")
                 for wcmd, desc in self._webhook_commands.items():
                     lines.append(f"- `{wcmd}`：{desc}")
+            # 合并插件注册的命令
+            if hasattr(self, "plugin_registry"):
+                seen = set(self._webhook_commands.keys()) if self._webhook_commands else set()
+                plugin_specs = [s for s in self.plugin_registry.get_all_command_specs() if s.get("command") not in seen]
+                if plugin_specs:
+                    if not self._webhook_commands:
+                        lines.append("")
+                        lines.append("### 🔗 扩展指令")
+                        lines.append("")
+                    for spec in plugin_specs:
+                        lines.append(f"- `{spec['command']}`：{spec.get('description', '')}")
             return "\n".join(lines)
 
         if cmd in ("/status", "/状态"):
@@ -213,7 +224,24 @@ class CommandMixin:
                     return "## ❌ AI 助手\n\n- **状态**：已关闭"
             return "## ❓ 用法\n\n- 查看状态：`/ai`\n- 开启：`/ai on`\n- 关闭：`/ai off`"
 
-        # 检查是否为已注册的扩展指令
+        # 检查插件注册表
+        if hasattr(self, "plugin_registry"):
+            base_cmd = cmd.split()[0]
+            plugin = self.plugin_registry.route_command(base_cmd, user_id)
+            if plugin:
+                parts = text.strip().split(maxsplit=1)
+                payload = {
+                    "from_user": user_id,
+                    "from_name": self._contact_name(user_id),
+                    "text": text,
+                    "command": parts[0].lower(),
+                    "args": parts[1] if len(parts) > 1 else "",
+                    "is_command": True,
+                }
+                plugin.handle(payload)
+                return ""  # 插件自行处理回复
+
+        # 检查是否为已注册的扩展指令（旧机制）
         if self._webhook_commands:
             base_cmd = cmd.split()[0]
             if base_cmd in self._webhook_commands:

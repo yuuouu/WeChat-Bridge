@@ -64,19 +64,11 @@ def main():
     webhook_mode = runtime_cfg.get("webhook_mode", "unknown_command")
     if webhook_enabled:
         logger.info("Webhook: %s (%s)", webhook_url, webhook_mode)
-        # 强制/默认使用 18082 时，自动启动内置 WebhookManager
-        if "18082" in webhook_url:
-            try:
-                from webhook_manager import start_manager_thread
-
-                start_manager_thread()
-                logger.info("✅ 已自动启动插件系统 (WebhookManager:18082)")
-            except Exception as e:
-                logger.error("❌ 启动插件系统失败: %s", e)
     elif webhook_url:
         logger.info("Webhook: %s (已配置未启用)", webhook_url)
     else:
         logger.info("Webhook: (未配置)")
+
     logger.info("API Token: %s", "已设置" if os.environ.get("API_TOKEN") else "(未设置，接口无鉴权)")
     logger.info("日志文件: %s", _log_file)
     logger.info("=" * 50)
