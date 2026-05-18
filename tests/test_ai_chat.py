@@ -127,6 +127,41 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(calls[0]["json"]["max_tokens"], 2048)
         self.assertEqual(calls[0]["json"]["temperature"], 0.7)
 
+    def test_reasoning_content_is_hidden_by_default(self):
+        class _FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def iter_lines(self):
+                yield b'data: {"choices": [{"delta": {"reasoning_content": "private thoughts"}}]}'
+                yield b'data: {"choices": [{"delta": {"content": "public reply"}}]}'
+
+        with patch("ai_chat.requests.post", return_value=_FakeResp()):
+            self.assertEqual(self.manager.chat("u1", "hello"), "public reply")
+
+        history = self.manager._histories["u1"]
+        self.assertEqual(history[-1]["role"], "assistant")
+        self.assertEqual(history[-1]["content"], "public reply")
+        self.assertNotIn("private thoughts", history[-1]["content"])
+
+    def test_reasoning_content_can_be_shown_when_enabled(self):
+        self.config["show_reasoning"] = True
+
+        class _FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def iter_lines(self):
+                yield b'data: {"choices": [{"delta": {"reasoning_content": "visible thoughts"}}]}'
+                yield b'data: {"choices": [{"delta": {"content": "public reply"}}]}'
+
+        with patch("ai_chat.requests.post", return_value=_FakeResp()):
+            reply = self.manager.chat("u1", "hello")
+
+        self.assertIn("【思考过程】", reply)
+        self.assertIn("visible thoughts", reply)
+        self.assertIn("public reply", reply)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -102,6 +102,7 @@ class AIChatManager:
             return msg
 
         max_history = config.get("max_history", 10)
+        show_reasoning = bool(config.get("show_reasoning", False))
         with self._lock:
             history = self._get_history(user_id)
             history.append({"role": "user", "content": text})
@@ -178,7 +179,7 @@ class AIChatManager:
                         content = delta.get("content", "")
                         reasoning = delta.get("reasoning_content", "")
 
-                        if reasoning:
+                        if reasoning and show_reasoning:
                             if not reasoning_started:
                                 reasoning_started = True
                                 yield "【思考过程】\n"
