@@ -43,8 +43,7 @@ sys.path.insert(0, os.path.join(_project_root, "app"))
 import config as cfg
 import db
 import web
-from bridge import WeChatBridge
-from ilink import ILinkClient
+from accounts import AccountManager
 from version import __version__
 
 
@@ -57,7 +56,8 @@ def main():
     logger.info("WeChat Bridge 启动中...")
     logger.info("版本: %s", __version__)
     logger.info("端口: %d", port)
-    logger.info("Token 文件: %s", os.environ.get("TOKEN_FILE", "./data/token.json"))
+    data_dir = os.environ.get("DATA_DIR", "./data")
+    logger.info("数据目录: %s", data_dir)
     runtime_cfg = cfg.load_config()
     webhook_url = runtime_cfg.get("webhook_url", "").strip()
     webhook_enabled = bool(runtime_cfg.get("webhook_enabled")) and bool(webhook_url)
@@ -72,10 +72,6 @@ def main():
     logger.info("API Token: %s", "已设置" if os.environ.get("API_TOKEN") else "(未设置，接口无鉴权)")
     logger.info("日志文件: %s", _log_file)
     logger.info("=" * 50)
-
-    # 初始化客户端
-    ilink_client = ILinkClient()
-    wechat_bridge = WeChatBridge(ilink_client)
 
     # ==== 检测更新 ====
     def check_for_updates():
@@ -157,26 +153,28 @@ def main():
     threading.Thread(target=check_for_updates, daemon=True).start()
 
     # ==== 新增：注入 AI 模块 ====
+    ai_manager = None
     try:
         from ai_chat import AIChatManager
 
         ai_manager = AIChatManager(cfg.load_config, cfg.save_config)
-        wechat_bridge.ai_manager = ai_manager
         logger.info("✅ AI 模块已挂载")
     except Exception as e:
         logger.error("❌ AI 模块加载失败: %s", e)
     # ==========================
 
-    # 注入 Web 层运行上下文
-    web.set_context(ilink_client, wechat_bridge, os.environ.get("API_TOKEN", ""))
+    # 初始化多账号运行时并恢复已保存账号
+    account_manager = AccountManager(data_dir, ai_manager=ai_manager)
+    restored = account_manager.restore_accounts()
+    logger.info("已恢复 %d 个微信账号", len(restored))
 
-    # 启动消息轮询（后台线程）
-    wechat_bridge.start()
+    # 注入 Web 层运行上下文
+    web.set_account_manager(account_manager, os.environ.get("API_TOKEN", ""))
 
     # 优雅退出
     def shutdown(signum, frame):
         logger.info("收到退出信号，正在关闭...")
-        wechat_bridge.stop()
+        account_manager.stop_all()
         db.close_db()
         sys.exit(0)
 

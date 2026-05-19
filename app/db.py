@@ -13,6 +13,8 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +24,10 @@ ACCOUNTS_DB_FILE = os.environ.get("ACCOUNTS_DB_FILE", os.path.join(os.path.dirna
 _active_accounts_db_file = ACCOUNTS_DB_FILE
 
 _conn: sqlite3.Connection | None = None
+_conns: dict[str, sqlite3.Connection] = {}
 _accounts_conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
+_current_db_file: ContextVar[str | None] = ContextVar("wechat_bridge_db_file", default=None)
 
 DEFAULT_DELIVERY_STATE = {
     "status": "NORMAL",
@@ -42,18 +46,37 @@ def _now_ts() -> int:
     return int(time.time())
 
 
+def _current_message_db_file() -> str:
+    return _current_db_file.get() or _active_db_file
+
+
+@contextmanager
+def use_db_file(db_file: str):
+    """在当前线程/协程上下文中使用指定消息数据库。"""
+    token = _current_db_file.set(db_file)
+    try:
+        yield
+    finally:
+        _current_db_file.reset(token)
+
+
 def _get_conn() -> sqlite3.Connection:
     """获取全局共享的 SQLite 连接。"""
     global _conn
-    if _conn is None:
-        os.makedirs(os.path.dirname(_active_db_file) or ".", exist_ok=True)
-        _conn = sqlite3.connect(_active_db_file, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.execute("PRAGMA synchronous=NORMAL")
-        _conn.execute("PRAGMA wal_autocheckpoint=500")
-        _conn.execute("PRAGMA busy_timeout=5000")
-    return _conn
+    db_file = _current_message_db_file()
+    conn = _conns.get(db_file)
+    if conn is None:
+        os.makedirs(os.path.dirname(db_file) or ".", exist_ok=True)
+        conn = sqlite3.connect(db_file, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA wal_autocheckpoint=500")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _conns[db_file] = conn
+        if db_file == _active_db_file:
+            _conn = conn
+    return conn
 
 
 def _get_accounts_conn() -> sqlite3.Connection:
@@ -74,13 +97,14 @@ def close_db():
     """关闭全局连接，供测试或进程退出时调用。"""
     global _conn, _accounts_conn
     with _lock:
-        if _conn is not None:
+        for conn in list(_conns.values()):
             try:
-                _conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception:
                 pass
-            _conn.close()
-            _conn = None
+            conn.close()
+        _conns.clear()
+        _conn = None
         if _accounts_conn is not None:
             try:
                 _accounts_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -129,6 +153,7 @@ def _ensure_accounts_schema(conn: sqlite3.Connection):
             last_logout_at  INTEGER NOT NULL DEFAULT 0,
             token_mtime     INTEGER NOT NULL DEFAULT 0,
             status          TEXT NOT NULL DEFAULT 'active',
+            is_default      INTEGER NOT NULL DEFAULT 0,
             updated_at      INTEGER NOT NULL
         )
     """
@@ -147,8 +172,29 @@ def _ensure_accounts_schema(conn: sqlite3.Connection):
         )
     """
     )
+    _ensure_column(conn, "bot_accounts", "is_default", "is_default INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "bot_accounts", "remark", "remark TEXT DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_login_events_bot ON bot_login_events(bot_id, created_at DESC)")
     conn.commit()
+
+
+class MessageStore:
+    """绑定到单个账号消息数据库的轻量代理。"""
+
+    def __init__(self, db_file: str):
+        self.db_file = db_file
+        init_db(db_file)
+
+    def __getattr__(self, name: str):
+        target = globals().get(name)
+        if not callable(target) or name in {"init_db", "close_db", "init_accounts_db"}:
+            raise AttributeError(name)
+
+        def _wrapped(*args, **kwargs):
+            with use_db_file(self.db_file):
+                return target(*args, **kwargs)
+
+        return _wrapped
 
 
 def init_accounts_db(data_dir: str | None = None):
@@ -240,6 +286,8 @@ def record_bot_account_event(
                 now_ts,
             ),
         )
+        if event == "logout":
+            conn.execute("UPDATE bot_accounts SET is_default = 0 WHERE bot_id = ?", (bot_id,))
         conn.execute(
             """
             INSERT INTO bot_login_events (bot_id, ilink_user_id, event, created_at, data_dir, reason, meta_json)
@@ -254,6 +302,84 @@ def get_bot_account(bot_id: str) -> dict | None:
     with _lock:
         row = _get_accounts_conn().execute("SELECT * FROM bot_accounts WHERE bot_id = ?", (bot_id,)).fetchone()
     return dict(row) if row else None
+
+
+def list_bot_accounts() -> list[dict]:
+    with _lock:
+        rows = (
+            _get_accounts_conn()
+            .execute("SELECT * FROM bot_accounts ORDER BY is_default DESC, last_seen_at DESC, bot_id ASC")
+            .fetchall()
+        )
+    return [dict(row) for row in rows]
+
+
+def get_default_bot_id() -> str | None:
+    with _lock:
+        row = (
+            _get_accounts_conn()
+            .execute(
+                """
+                SELECT bot_id FROM bot_accounts
+                WHERE is_default = 1 AND status != 'logged_out'
+                ORDER BY updated_at DESC
+                LIMIT 1
+            """
+            )
+            .fetchone()
+        )
+        if row:
+            return row["bot_id"]
+        row = (
+            _get_accounts_conn()
+            .execute(
+                """
+                SELECT bot_id FROM bot_accounts
+                WHERE status != 'logged_out'
+                ORDER BY last_seen_at DESC, updated_at DESC
+                LIMIT 1
+            """
+            )
+            .fetchone()
+        )
+    return row["bot_id"] if row else None
+
+
+def clear_default_bot_account():
+    with _lock:
+        conn = _get_accounts_conn()
+        conn.execute("UPDATE bot_accounts SET is_default = 0")
+        conn.commit()
+
+
+def set_default_bot_account(bot_id: str) -> bool:
+    if not bot_id:
+        return False
+    with _lock:
+        conn = _get_accounts_conn()
+        row = conn.execute("SELECT bot_id FROM bot_accounts WHERE bot_id = ?", (bot_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("UPDATE bot_accounts SET is_default = 0")
+        conn.execute("UPDATE bot_accounts SET is_default = 1, updated_at = ? WHERE bot_id = ?", (_now_ts(), bot_id))
+        conn.commit()
+    return True
+
+
+def set_account_remark(bot_id: str, remark: str) -> bool:
+    if not bot_id:
+        return False
+    with _lock:
+        conn = _get_accounts_conn()
+        row = conn.execute("SELECT bot_id FROM bot_accounts WHERE bot_id = ?", (bot_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE bot_accounts SET remark = ?, updated_at = ? WHERE bot_id = ?",
+            (remark.strip(), _now_ts(), bot_id),
+        )
+        conn.commit()
+    return True
 
 
 def list_bot_login_events(bot_id: str) -> list[dict]:
@@ -340,14 +466,12 @@ def init_db(db_file: str = None):
     """初始化数据库表结构。可传入 db_file 切换到新路径（用于多账号隔离）。"""
     global _active_db_file, _conn
     if db_file and db_file != _active_db_file:
-        with _lock:
-            if _conn is not None:
-                _conn.close()
-                _conn = None
         _active_db_file = db_file
+        _conn = _conns.get(_active_db_file)
         logger.info("数据库路径切换为: %s", _active_db_file)
 
-    with _lock:
+    target_db_file = db_file or _active_db_file
+    with _lock, use_db_file(target_db_file):
         conn = _get_conn()
         conn.execute(
             """
@@ -1006,6 +1130,20 @@ def get_pending_messages(session_id: str, status: str = "PENDING") -> list[dict]
     return [_row_to_pending_message(row) for row in rows]
 
 
+def list_pending_messages(status: str = "PENDING") -> list[dict]:
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM pending_messages
+            WHERE status = ?
+            ORDER BY created_at ASC, id ASC
+        """,
+            (status,),
+        ).fetchall()
+    return [_row_to_pending_message(row) for row in rows]
+
+
 def get_pending_count(session_id: str | None) -> int:
     if not session_id:
         return 0
@@ -1063,3 +1201,61 @@ def discard_pending_messages(session_id: str, discarded_at: int | None = None) -
             conn.commit()
     recount_overflow_session_pending_count(session_id)
     return pending_ids
+
+
+def discard_pending_message_ids(pending_ids: list[int], discarded_at: int | None = None) -> list[str]:
+    if not pending_ids:
+        return []
+    discarded_at = discarded_at or _now_ts()
+    placeholders = ",".join("?" for _ in pending_ids)
+    with _lock:
+        conn = _get_conn()
+        session_rows = conn.execute(
+            f"SELECT DISTINCT session_id FROM pending_messages WHERE id IN ({placeholders})",
+            tuple(pending_ids),
+        ).fetchall()
+        session_ids = [row["session_id"] for row in session_rows]
+        conn.execute(
+            f"""
+            UPDATE pending_messages
+            SET status = 'DISCARDED', discarded_at = ?
+            WHERE id IN ({placeholders}) AND status = 'PENDING'
+        """,
+            (discarded_at, *pending_ids),
+        )
+        conn.commit()
+    for session_id in session_ids:
+        recount_overflow_session_pending_count(session_id)
+    return session_ids
+
+
+def discard_empty_overflow_sessions(session_ids: list[str], discarded_at: int | None = None) -> list[dict]:
+    if not session_ids:
+        return []
+    discarded_at = discarded_at or _now_ts()
+    placeholders = ",".join("?" for _ in session_ids)
+    with _lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            f"""
+            SELECT * FROM overflow_sessions
+            WHERE id IN ({placeholders})
+              AND status IN ('OPEN', 'READY_PULL')
+              AND pending_count <= 0
+        """,
+            tuple(session_ids),
+        ).fetchall()
+        sessions = [_row_to_overflow_session(row) for row in rows]
+        if sessions:
+            ids = [session["id"] for session in sessions]
+            update_placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"""
+                UPDATE overflow_sessions
+                SET status = 'DISCARDED', discarded_at = ?, pending_count = 0
+                WHERE id IN ({update_placeholders})
+            """,
+                (discarded_at, *ids),
+            )
+            conn.commit()
+    return [session for session in sessions if session]

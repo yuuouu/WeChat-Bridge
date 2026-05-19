@@ -54,8 +54,11 @@ MSG_TYPE_MAP = {
 class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
     """微信消息桥接器。"""
 
-    def __init__(self, client: ILinkClient):
+    def __init__(self, client: ILinkClient, data_base: str | None = None):
         self.client = client
+        self.data_base = data_base or DATA_BASE
+        self.db = db.MessageStore(os.path.join(self.data_base, "messages.db"))
+        self._media_dir = os.path.join(self.data_base, "media")
         self.contacts: dict[str, str] = {}
         self.context_tokens: dict[str, str] = {}
         self._start_time = time.time()
@@ -65,6 +68,8 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self._ag_inbox_lock = threading.Lock()
         self._running = False
         self._poll_thread: threading.Thread | None = None
+        self._pending_cleanup_thread: threading.Thread | None = None
+        self._last_pending_cleanup_at = 0
         self.ai_manager = None
         self._consecutive_send_count: dict[str, dict] = {}
         self._webhook_commands: dict[str, str] = {}  # 外部服务注册的命令 {"/rj": "开始日记录入"}
@@ -81,21 +86,22 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         discover_and_register_plugins(self.plugin_registry)
         self.plugin_registry.start_all()
 
-    def _setup_data_dir(self, bot_id: str = None):
+    def _setup_data_dir(self, bot_id: str | None = None):
         """根据 bot_id 设置数据目录，实现多账号数据隔离。"""
-        db.init_accounts_db(DATA_BASE)
+        db.init_accounts_db(self.data_base)
         bid = bot_id or self.client.get_bot_id()
         if bid:
-            self._data_dir = os.path.join(DATA_BASE, bid)
+            self._data_dir = os.path.join(self.data_base, bid)
             logger.info("数据目录按 bot_id 隔离: %s", self._data_dir)
         else:
-            self._data_dir = DATA_BASE
+            self._data_dir = self.data_base
             logger.info("未检测到 bot_id，使用默认数据目录: %s", self._data_dir)
         os.makedirs(self._data_dir, exist_ok=True)
 
         self._contacts_file = os.path.join(self._data_dir, "contacts.json")
-        db.init_db(os.path.join(self._data_dir, "messages.db"))
-        media.set_media_dir(os.path.join(self._data_dir, "media"))
+        self.db = db.MessageStore(os.path.join(self._data_dir, "messages.db"))
+        self._media_dir = os.path.join(self._data_dir, "media")
+        os.makedirs(self._media_dir, exist_ok=True)
 
     def record_account_event(
         self,
@@ -115,7 +121,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             bot_id=resolved_bot_id,
             ilink_user_id=ilink_user_id if ilink_user_id is not None else (getattr(self.client, "user_id", "") or ""),
             event=event,
-            data_dir=getattr(self, "_data_dir", os.path.join(DATA_BASE, resolved_bot_id)),
+            data_dir=getattr(self, "_data_dir", os.path.join(self.data_base, resolved_bot_id)),
             base_url=base_url if base_url is not None else (getattr(self.client, "base_url", "") or ""),
             reason=reason,
             meta=meta,
@@ -155,12 +161,12 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
 
     def _latest_contact_times(self) -> dict[str, int]:
         try:
-            latest_times = db.get_latest_receive_times_by_user()
+            latest_times = self.db.get_latest_receive_times_by_user()
         except Exception as exc:
             logger.debug("读取联系人最近入站时间失败: %s", exc)
             latest_times = {}
 
-        for state in db.list_delivery_states():
+        for state in self.db.list_delivery_states():
             try:
                 last_user_message_at = int(state.get("last_user_message_at") or 0)
             except (AttributeError, TypeError, ValueError):
@@ -200,7 +206,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         title: str = "",
         message_len: int = 0,
     ):
-        db.record_default_recipient_decision(
+        self.db.record_default_recipient_decision(
             bot_id=self.client.get_bot_id() or "",
             request_path=request_path,
             source=source,
@@ -244,7 +250,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         outbound_at: int | None = None,
         context_token_at: int | None = None,
     ):
-        db.record_contact_activity(
+        self.db.record_contact_activity(
             user_id=user_id,
             bot_id=self.client.get_bot_id() or "",
             display_name=display_name or self.contacts.get(user_id, ""),
@@ -294,17 +300,21 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
     def _contact_name(self, user_id: str, fallback: str = "") -> str:
         return self.contacts.get(user_id, fallback or user_id.split("@")[0])
 
+    def _account_scoped_user_id(self, user_id: str) -> str:
+        bot_id = self.client.get_bot_id() or ""
+        return f"{bot_id}:{user_id}" if bot_id else user_id
+
     # ── 持久化与状态 ──
 
     def _record_message(self, msg_dict: dict):
         """将消息同时写入内存缓存和 SQLite 持久化存储。"""
         self.recent_messages.append(msg_dict)
-        db.save_message(msg_dict)
+        self.db.save_message(msg_dict)
 
     def _save_outbound_image(self, file_data: bytes) -> str:
-        media._ensure_media_dir()
+        media._ensure_media_dir(self._media_dir)
         filename = f"out_img_{int(time.time())}_{uuid.uuid4().hex[:8]}.jpg"
-        save_path = os.path.join(media.MEDIA_DIR, filename)
+        save_path = os.path.join(self._media_dir, filename)
         with open(save_path, "wb") as fh:
             fh.write(file_data)
         return filename
@@ -331,6 +341,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                         encrypted_query_param=pic_info["encrypted_query_param"],
                         aes_key_b64=pic_info["aes_key"],
                         msg_id=msg_id,
+                        media_dir=self._media_dir,
                     )
                     if filepath:
                         filename = os.path.basename(filepath)
@@ -360,6 +371,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                         aes_key_b64=video_info["aes_key"],
                         msg_id=msg_id,
                         media_type="video",
+                        media_dir=self._media_dir,
                     )
                     if filepath:
                         filename = os.path.basename(filepath)
@@ -478,7 +490,14 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self.event_bus.publish(
             Event(
                 EVENT_MESSAGE_RECEIVED,
-                {"from_user": from_user, "from_name": from_name, "text": text, "msg": msg, "media_paths": media_paths},
+                {
+                    "bot_id": self.client.get_bot_id() or "",
+                    "from_user": from_user,
+                    "from_name": from_name,
+                    "text": text,
+                    "msg": msg,
+                    "media_paths": media_paths,
+                },
             )
         )
 
@@ -505,7 +524,8 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 def _async_retry_worker():
                     try:
                         self.send(from_user, "## 🔄 正在重试\n\n- 正在为您重新生成回答", source="system")
-                        ai_reply = self.ai_manager.chat(from_user, retry_text) if self.ai_manager else ""
+                        ai_key = self._account_scoped_user_id(from_user)
+                        ai_reply = self.ai_manager.chat(ai_key, retry_text) if self.ai_manager else ""
                         if ai_reply:
                             result = self.send(from_user, ai_reply, source="ai")
                             if not result.get("ok"):
@@ -545,7 +565,8 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                     chunk_buffer = ""
                     first_send = True
                     # 缓冲块，尽量一次性发送，防止碎消息刷屏，微信单条限制约 5200 字符
-                    for chunk in self.ai_manager.chat_stream(uid, msg_text):
+                    ai_key = self._account_scoped_user_id(uid)
+                    for chunk in self.ai_manager.chat_stream(ai_key, msg_text):
                         chunk_buffer += chunk
                         # 超过 4500 字且遇到换行，或者极限达到 5000 字时，分段发送
                         if len(chunk_buffer) >= 5000 or (len(chunk_buffer) >= 4500 and "\n\n" in chunk):
@@ -685,11 +706,14 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         if self._running:
             return
         self._running = True
+        self.cleanup_expired_pending_messages(force=True)
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._poll_thread.start()
 
         self._keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True)
         self._keepalive_thread.start()
+        self._pending_cleanup_thread = threading.Thread(target=self._pending_cleanup_loop, daemon=True)
+        self._pending_cleanup_thread.start()
         logger.info("WeChatBridge 已启动")
 
     def stop(self):
@@ -703,4 +727,6 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             self._poll_thread.join(timeout=10)
         if getattr(self, "_keepalive_thread", None):
             self._keepalive_thread.join(timeout=2)
+        if getattr(self, "_pending_cleanup_thread", None):
+            self._pending_cleanup_thread.join(timeout=2)
         logger.info("WeChatBridge 已停止")

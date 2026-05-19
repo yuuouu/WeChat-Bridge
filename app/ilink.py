@@ -22,6 +22,7 @@ ILINK_CHANNEL_VERSION = "2.1.7"
 ILINK_APP_ID = "bot"
 ILINK_APP_CLIENT_VERSION = 131335
 TOKEN_FILE = os.environ.get("TOKEN_FILE", "./data/token.json")
+_DEFAULT_TOKEN_FILE = object()
 
 # UploadMediaType（对应 iLink proto GetUploadUrlReq.media_type）
 UPLOAD_MEDIA_TYPE_IMAGE = 1
@@ -76,7 +77,11 @@ def _base_info() -> dict:
 class ILinkClient:
     """iLink Bot API 客户端"""
 
-    def __init__(self):
+    def __init__(self, token_file=_DEFAULT_TOKEN_FILE, *, load_token: bool = True, save_on_login: bool = True):
+        if token_file is _DEFAULT_TOKEN_FILE:
+            token_file = TOKEN_FILE
+        self.token_file: str | None = token_file
+        self.save_on_login = save_on_login
         self.bot_token: str | None = None
         self.base_url: str = BASE_URL
         self.bot_id: str | None = None
@@ -84,7 +89,8 @@ class ILinkClient:
         self.get_updates_buf: str = ""
         self._login_poll_base_url: str = FIXED_BASE_URL
         self._session = requests.Session()
-        self._load_token()
+        if load_token:
+            self._load_token()
 
     @staticmethod
     def _extract_bot_id(bot_token: str) -> str | None:
@@ -133,9 +139,9 @@ class ILinkClient:
 
     def _load_token(self):
         """从文件恢复 token"""
-        if os.path.exists(TOKEN_FILE):
+        if self.token_file and os.path.exists(self.token_file):
             try:
-                with open(TOKEN_FILE) as f:
+                with open(self.token_file) as f:
                     data = json.load(f)
                 self.bot_token = data.get("bot_token")
                 self.base_url = data.get("base_url", BASE_URL)
@@ -149,8 +155,10 @@ class ILinkClient:
 
     def _save_token(self):
         """持久化 token 到文件"""
-        os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
-        with open(TOKEN_FILE, "w") as f:
+        if not self.token_file:
+            return
+        os.makedirs(os.path.dirname(self.token_file), exist_ok=True)
+        with open(self.token_file, "w") as f:
             json.dump(
                 {
                     "bot_token": self.bot_token,
@@ -166,7 +174,7 @@ class ILinkClient:
     def get_token_mtime(self) -> int:
         """返回 token 文件修改时间，用于账号审计。"""
         try:
-            return int(os.path.getmtime(TOKEN_FILE))
+            return int(os.path.getmtime(self.token_file)) if self.token_file else 0
         except OSError:
             return 0
 
@@ -177,8 +185,8 @@ class ILinkClient:
         self.user_id = None
         self.get_updates_buf = ""
         self._login_poll_base_url = FIXED_BASE_URL
-        if os.path.exists(TOKEN_FILE):
-            os.remove(TOKEN_FILE)
+        if self.token_file and os.path.exists(self.token_file):
+            os.remove(self.token_file)
         logger.info("登录态已清除")
 
     # ── 登录流程 ──
@@ -229,7 +237,8 @@ class ILinkClient:
             self.bot_id = ilink_bot_id
             self.user_id = data.get("ilink_user_id")
             self._login_poll_base_url = FIXED_BASE_URL
-            self._save_token()
+            if self.save_on_login:
+                self._save_token()
             logger.info("扫码登录成功! bot_id=%s", self.bot_id)
 
         return data

@@ -12,6 +12,8 @@ import hashlib
 import logging
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import requests
 from Crypto.Cipher import AES
@@ -21,6 +23,20 @@ logger = logging.getLogger(__name__)
 # 媒体文件存储根目录（Docker volume 挂载 /data）
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "./data/media")
 CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
+_current_media_dir: ContextVar[str | None] = ContextVar("wechat_bridge_media_dir", default=None)
+
+
+def _get_media_dir(media_dir: str | None = None) -> str:
+    return media_dir or _current_media_dir.get() or MEDIA_DIR
+
+
+@contextmanager
+def use_media_dir(media_dir: str):
+    token = _current_media_dir.set(media_dir)
+    try:
+        yield
+    finally:
+        _current_media_dir.reset(token)
 
 
 def set_media_dir(new_dir: str):
@@ -30,9 +46,9 @@ def set_media_dir(new_dir: str):
     logger.info("媒体目录切换为: %s", MEDIA_DIR)
 
 
-def _ensure_media_dir():
+def _ensure_media_dir(media_dir: str | None = None):
     """确保媒体存储目录存在"""
-    os.makedirs(MEDIA_DIR, exist_ok=True)
+    os.makedirs(_get_media_dir(media_dir), exist_ok=True)
 
 
 def _unpad_pkcs7(data: bytes) -> bytes:
@@ -129,6 +145,7 @@ def download_and_decrypt_image(
     aes_key_b64: str,
     msg_id: str = "",
     timeout: int = 30,
+    media_dir: str | None = None,
 ) -> str | None:
     """从微信 CDN 下载加密图片并解密保存到本地（download_and_decrypt_media 的便捷别名）"""
     return download_and_decrypt_media(
@@ -137,6 +154,7 @@ def download_and_decrypt_image(
         msg_id=msg_id,
         media_type="image",
         timeout=timeout,
+        media_dir=media_dir,
     )
 
 
@@ -146,13 +164,15 @@ def download_and_decrypt_media(
     msg_id: str = "",
     media_type: str = "video",
     timeout: int = 60,
+    media_dir: str | None = None,
 ) -> str | None:
     """
     通用媒体文件下载解密（图片/视频/文件/语音等）
 
     流程：CDN 下载 → AES-128-ECB 解密 → 本地保存
     """
-    _ensure_media_dir()
+    target_media_dir = _get_media_dir(media_dir)
+    _ensure_media_dir(target_media_dir)
 
     cdn_url = f"{CDN_BASE_URL}/download?encrypted_query_param={encrypted_query_param}"
     logger.info("开始下载 CDN %s: msg_id=%s, url=%s", media_type, msg_id, cdn_url[:120])
@@ -183,7 +203,7 @@ def download_and_decrypt_media(
         ts = int(time.time())
         safe_id = hashlib.md5(msg_id.encode()).hexdigest()[:12] if msg_id else f"{ts}"
         filename = f"{ts}_{safe_id}.{ext}"
-        filepath = os.path.join(MEDIA_DIR, filename)
+        filepath = os.path.join(target_media_dir, filename)
 
         with open(filepath, "wb") as f:
             f.write(decrypted)
@@ -271,11 +291,11 @@ def _detect_media_format(data: bytes, media_type: str = "video") -> str:
     return ext
 
 
-def get_media_path(filename: str) -> str | None:
+def get_media_path(filename: str, media_dir: str | None = None) -> str | None:
     """获取媒体文件完整路径（带安全校验）"""
     # 防路径穿越
     safe_name = os.path.basename(filename)
-    filepath = os.path.join(MEDIA_DIR, safe_name)
+    filepath = os.path.join(_get_media_dir(media_dir), safe_name)
     if os.path.isfile(filepath):
         return filepath
     return None

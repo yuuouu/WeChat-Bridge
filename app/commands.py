@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 
 import config as cfg
+import db
 from fmt import md_inline as _md_inline
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,10 @@ class CommandMixin:
 
         if cmd in ("/clear", "/清除"):
             if self.ai_manager:
-                self.ai_manager.clear_history(user_id)
+                history_key = (
+                    self._account_scoped_user_id(user_id) if hasattr(self, "_account_scoped_user_id") else user_id
+                )
+                self.ai_manager.clear_history(history_key)
             return "## ✅ 清除完成\n\n- AI 对话历史已清除"
 
         if cmd in ("/uid",):
@@ -230,6 +234,7 @@ class CommandMixin:
             plugin = self.plugin_registry.route_command(base_cmd, user_id)
             if plugin:
                 parts = text.strip().split(maxsplit=1)
+                _bot_id = self.client.get_bot_id() if hasattr(self, "client") else ""
                 payload = {
                     "from_user": user_id,
                     "from_name": self._contact_name(user_id),
@@ -237,6 +242,8 @@ class CommandMixin:
                     "command": parts[0].lower(),
                     "args": parts[1] if len(parts) > 1 else "",
                     "is_command": True,
+                    "bot_id": _bot_id,
+                    "is_default": _bot_id == (db.get_default_bot_id() or ""),
                 }
                 plugin.handle(payload)
                 return ""  # 插件自行处理回复
