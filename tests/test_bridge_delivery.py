@@ -243,6 +243,24 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(self.bridge.context_tokens, {})
         self.assertEqual(self.bridge.activity_tracker, {})
 
+    def test_two_bridges_keep_message_and_media_storage_isolated(self):
+        client_two = _FakeClient()
+        client_two.bot_id = "bot-two"
+        bridge_two = bridge_module.WeChatBridge(client_two)
+        bridge_two.contacts["uid-2"] = "Bob"
+        bridge_two.context_tokens["uid-2"] = "ctx-2"
+        bridge_two._save_contacts()
+
+        self.bridge.send("Alice", "from bot one")
+        bridge_two.send("Bob", "from bot two")
+
+        messages_one = self.bridge.db.get_messages(limit=10)
+        messages_two = bridge_two.db.get_messages(limit=10)
+        self.assertTrue(any(message["text"] == "from bot one" for message in messages_one))
+        self.assertFalse(any(message["text"] == "from bot two" for message in messages_one))
+        self.assertTrue(any(message["text"] == "from bot two" for message in messages_two))
+        self.assertNotEqual(self.bridge._media_dir, bridge_two._media_dir)
+
     def test_builtin_command_replies_are_markdown_formatted(self):
         # Disable webhook to ensure we get the fallback "未知指令" reply
         current_cfg = cfg.load_config()
@@ -376,6 +394,83 @@ class BridgeDeliveryTests(unittest.TestCase):
                 for message in messages
             )
         )
+
+    def test_expired_default_pending_messages_are_discarded(self):
+        now_ts = int(time.time())
+        old_ts = now_ts - 73 * 3600
+        session = self.bridge.db.create_overflow_session(
+            "old-default-session",
+            "uid-1",
+            "window_24h",
+            opened_at=old_ts,
+        )
+        pending = self.bridge.db.create_pending_message(
+            session_id=session["id"],
+            user_id="uid-1",
+            source="api",
+            content="old pending message",
+            blocked_reason="window_24h",
+            created_at=old_ts,
+        )
+        self.bridge._set_delivery_state(
+            "uid-1",
+            status="BUFFERING",
+            active_overflow_session_id=session["id"],
+            blocked_reason="window_24h",
+        )
+
+        result = self.bridge.cleanup_expired_pending_messages(now_ts=now_ts, force=True)
+
+        self.assertEqual(result["expired"], 1)
+        self.assertEqual(result["sessions_discarded"], 1)
+        self.assertEqual(self.bridge.db.get_pending_message(pending["id"])["status"], "DISCARDED")
+        self.assertEqual(self.bridge.db.get_overflow_session(session["id"])["status"], "DISCARDED")
+        summary = self.bridge.get_delivery_summary("uid-1")
+        self.assertEqual(summary["status"], "NORMAL")
+        self.assertEqual(summary["pending_count"], 0)
+        self.assertIsNone(summary["active_overflow_session_id"])
+
+    def test_time_sensitive_pending_messages_expire_after_24_hours(self):
+        now_ts = int(time.time())
+        old_ts = now_ts - 25 * 3600
+        session = self.bridge.db.create_overflow_session(
+            "old-keepalive-session", "uid-1", "window_24h", opened_at=old_ts
+        )
+        pending = self.bridge.db.create_pending_message(
+            session_id=session["id"],
+            user_id="uid-1",
+            source="keepalive",
+            content="## ⏰ 通道保活提醒",
+            blocked_reason="window_24h",
+            created_at=old_ts,
+        )
+
+        result = self.bridge.cleanup_expired_pending_messages(now_ts=now_ts, force=True)
+
+        self.assertEqual(result["expired"], 1)
+        self.assertEqual(self.bridge.db.get_pending_message(pending["id"])["status"], "DISCARDED")
+
+    def test_media_pending_messages_keep_for_seven_days(self):
+        now_ts = int(time.time())
+        old_ts = now_ts - 100 * 3600
+        session = self.bridge.db.create_overflow_session("old-media-session", "uid-1", "window_24h", opened_at=old_ts)
+        pending = self.bridge.db.create_pending_message(
+            session_id=session["id"],
+            user_id="uid-1",
+            source="image",
+            content="[图片:out_img.jpg]",
+            media="out_img.jpg",
+            blocked_reason="window_24h",
+            created_at=old_ts,
+        )
+
+        result = self.bridge.cleanup_expired_pending_messages(now_ts=now_ts, force=True)
+        self.assertEqual(result["expired"], 0)
+        self.assertEqual(self.bridge.db.get_pending_message(pending["id"])["status"], "PENDING")
+
+        result = self.bridge.cleanup_expired_pending_messages(now_ts=old_ts + 169 * 3600, force=True)
+        self.assertEqual(result["expired"], 1)
+        self.assertEqual(self.bridge.db.get_pending_message(pending["id"])["status"], "DISCARDED")
 
     def test_ret_minus_two_without_local_window_expiry_is_marked_as_api_limit(self):
         def _raise_limit(to_user_id: str, text: str, context_token: str = "") -> dict:

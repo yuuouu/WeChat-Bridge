@@ -6,6 +6,30 @@
 
 > 如果设置了 `API_TOKEN`，所有 API 请求需携带 `Authorization: Bearer <TOKEN>` 请求头，或在 URL 中添加 `?token=<TOKEN>` 参数。
 
+## 多账号参数
+
+服务支持多个微信 Bot 账号同时在线。所有发送、联系人、消息、Webhook、图片和 SSE 接口都支持 `bot_id` 参数：
+
+- 不传 `bot_id`：使用默认账号，兼容旧脚本。
+- 传 `bot_id`：路由到指定账号；账号不存在返回 404。
+
+```bash
+curl -X POST http://localhost:5200/api/send \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{"bot_id": "你的bot_id", "to": "好友名称", "text": "Hello!"}'
+```
+
+账号管理接口：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/accounts` | 查看账号列表、默认账号和在线状态 |
+| `POST /api/accounts/default` | 设置默认账号：`{"bot_id":"..."}` |
+| `POST /api/accounts/logout` | 退出指定账号：`{"bot_id":"..."}` |
+| `POST /api/accounts/qr` | 创建新增账号扫码登录二维码 |
+| `GET /api/accounts/qr_status?login_id=...` | 轮询新增账号扫码结果 |
+
 ## 发送消息
 
 ```bash
@@ -54,6 +78,39 @@ Docker 部署可设置环境变量 `MARKDOWN_MODE=normalize` 作为全局默认�
 2. 调用 `/api/send_image` 上传并发送图片。
 
 文本里的 `![alt](url)` 只会按文本内容处理，不会触发图片下载或图片消息发送。
+
+---
+
+## AI 分析接口（青龙 / 自动化调用）
+
+`POST /api/ai_analyze` 用于让外部脚本调用 Web 管理面板中配置的 AI 能力。该接口不会发送微信消息，也不会写入任何用户对话历史，适合青龙任务、巡检脚本和日志分析脚本同步获取分析结论。
+
+```bash
+curl -X POST http://localhost:5200/api/ai_analyze \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "prompt": "请分析今天青龙签到失败原因，并给出下一步排查建议。",
+    "system_prompt": "你是一个 iStoreOS 和青龙运维助手，回答要直接、可执行。"
+  }'
+```
+
+请求字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `prompt` | 是 | 要分析的内容；也兼容 `text` / `content` 字段名 |
+| `system_prompt` | 否 | 单次调用的系统提示词，不传则使用 Web UI 中配置的默认提示词 |
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "result": "分析结论...",
+  "text": "分析结论..."
+}
+```
 
 ---
 
@@ -207,19 +264,38 @@ curl http://localhost:5200/api/status
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
 | `PORT` | `5200` | 服务监听端口 |
+| `DATA_DIR` | `./data` | 多账号数据根目录，账号数据位于 `DATA_DIR/<bot_id>/` |
 | `WEBHOOK_URL` | _(空)_ | 外部 Webhook 地址，也可在 Web UI 中配置 |
 | `WEBHOOK_ENABLED` | `false` | 是否开启外部 Webhook 转发 |
 | `WEBHOOK_MODE` | `unknown_command` | 转发模式：`unknown_command` / `all_messages` |
 | `WEBHOOK_TIMEOUT` | `5` | Webhook 请求超时（秒，1~30） |
 | `API_TOKEN` | _(空)_ | API 鉴权 Token，未设置则无鉴权 |
-| `TOKEN_FILE` | `/data/token.json` | 登录凭证持久化路径 |
+| `TOKEN_FILE` | `./data/token.json` | 旧版单账号凭证路径；启动后会迁移到账号目录 |
 | `AI_ENABLED` | `false` | 是否启用 AI 助手 |
 | `AI_PROVIDER` | `openai` | AI 厂商预设：`openai` / `gemini` / `claude` / `deepseek` / `minimax`，也可填自定义 OpenAI-compatible 厂商名 |
 | `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
 | `AI_BASE_URL` | _(空)_ | 自定义 OpenAI-compatible `/v1` Base URL，留空使用预设厂商默认地址 |
 | `CONTACTS_FILE` | `/data/contacts.json` | 联系人缓存路径 |
 | `AI_CONFIG_FILE` | `/data/ai_config.json` | AI 助手配置文件路径 |
+| `PENDING_MESSAGE_TTL_HOURS` | `72` | 普通缓存消息保留小时数，过期后标记为 `DISCARDED`；设为 `0` 表示不过期 |
+| `PENDING_TIME_SENSITIVE_TTL_HOURS` | `24` | 行情、保活、设备上下线等时效缓存消息保留小时数 |
+| `PENDING_MEDIA_TTL_HOURS` | `168` | 图片等媒体缓存消息保留小时数 |
+| `PENDING_CLEANUP_INTERVAL_SECONDS` | `3600` | 过期缓存后台清理间隔；启动时也会立即清理一次 |
 | `TZ` | `Asia/Shanghai` | 容器时区 |
+
+---
+
+## 🧹 缓存消息清理策略
+
+当消息因 24h 窗口、连续 10 条限制或上游限制无法投递时，会进入 `pending_messages`，等待用户回复后通过 `/pull` 补拉。为避免旧行情、保活提醒、路由器上下线通知长期堆积，服务会自动清理过期缓存：
+
+| 类型 | 默认 TTL | 判定方式 |
+|---|---:|---|
+| 时效消息 | 24 小时 | `keepalive` 来源，或内容/标题包含行情、金价、OKX、设备上下线、保活提醒等关键词 |
+| 普通消息 | 72 小时 | 默认类型 |
+| 媒体消息 | 168 小时 | `pending_messages.media` 不为空 |
+
+清理动作是软删除：`pending_messages.status` 更新为 `DISCARDED`，相关消息在历史中显示为“已丢弃”，不会物理删除记录。若某个 overflow session 的待拉取消息全部过期，该 session 会标记为 `DISCARDED`，对应联系人投递状态恢复为 `NORMAL`。
 
 ---
 

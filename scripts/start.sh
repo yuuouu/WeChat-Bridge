@@ -17,15 +17,23 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-# 安装依赖
-pip3 install -q -r app/requirements.txt 2>/dev/null
+# 创建虚拟环境并安装依赖
+if [ ! -x ".venv/bin/python" ]; then
+    python3 -m venv .venv || {
+        echo " [X] Failed to create Python virtual environment"
+        echo "     Ubuntu/Debian: sudo apt install python3-venv"
+        exit 1
+    }
+fi
+
+.venv/bin/python -m pip install -q -r app/requirements.txt 2>/dev/null
 
 # 创建数据目录
 mkdir -p data
 
 # 后台启动服务
 echo " [OK] Starting service in background..."
-nohup python3 app/main.py >> data/run.log 2>&1 &
+nohup .venv/bin/python app/main.py >> data/run.log 2>&1 &
 PID=$!
 echo $PID > data/wechat-bridge.pid
 

@@ -127,6 +127,29 @@ class AIChatTests(unittest.TestCase):
         self.assertEqual(calls[0]["json"]["max_tokens"], 2048)
         self.assertEqual(calls[0]["json"]["temperature"], 0.7)
 
+    def test_one_shot_uses_prompt_without_touching_history(self):
+        calls = []
+
+        class _FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": "analysis result"}}]}
+
+        def fake_post(endpoint, json, headers, timeout):
+            calls.append({"endpoint": endpoint, "json": json, "headers": headers, "timeout": timeout})
+            return _FakeResp()
+
+        with patch("ai_chat.requests.post", side_effect=fake_post):
+            result = self.manager.one_shot("检查签到日志", system_prompt="你是运维助手")
+
+        self.assertEqual(result, "analysis result")
+        self.assertEqual(self.manager._histories, {})
+        self.assertEqual(calls[0]["json"]["messages"][0], {"role": "system", "content": "你是运维助手"})
+        self.assertEqual(calls[0]["json"]["messages"][1], {"role": "user", "content": "检查签到日志"})
+        self.assertTrue(self.saved_configs)
+
     def test_reasoning_content_is_hidden_by_default(self):
         class _FakeResp:
             def raise_for_status(self):

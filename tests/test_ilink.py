@@ -101,6 +101,25 @@ class TokenPersistenceTests(unittest.TestCase):
         self.assertEqual(client.get_updates_buf, "")
         self.assertFalse(os.path.exists(ilink.TOKEN_FILE))
 
+    def test_instance_token_files_are_isolated(self):
+        token_a = str(Path(self.tempdir.name) / "a" / "token.json")
+        token_b = str(Path(self.tempdir.name) / "b" / "token.json")
+        client_a = ilink.ILinkClient(token_file=token_a)
+        client_b = ilink.ILinkClient(token_file=token_b)
+
+        client_a.bot_token = "a@im.bot:hash"
+        client_a.bot_id = "a"
+        client_a._save_token()
+        client_b.bot_token = "b@im.bot:hash"
+        client_b.bot_id = "b"
+        client_b._save_token()
+
+        client_a.clear_token()
+
+        self.assertFalse(Path(token_a).exists())
+        self.assertTrue(Path(token_b).exists())
+        self.assertEqual(ilink.ILinkClient(token_file=token_b).bot_id, "b")
+
 
 class LoggedInPropertyTests(unittest.TestCase):
     """logged_in 属性应反映 bot_token 是否存在。"""

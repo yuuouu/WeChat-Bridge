@@ -164,11 +164,11 @@ curl "https://bot.example.com/api/send?token=change-this-token&to=好友名称&t
 
 ## 核心能力
 
-- **标准 HTTP API**：`/api/send`、`/api/send_image`、`/api/push`、`/api/webhook`、`/api/contacts`、`/api/status`
+- **标准 HTTP API**：`/api/send`、`/api/send_image`、`/api/push`、`/api/webhook`、`/api/ai_analyze`、`/api/contacts`、`/api/status`
 - **双向消息桥接**：微信消息可进入 Web UI、内置 AI 或外部 Webhook；外部服务可异步回写微信
 - **Web 管理面板**：扫码登录、实时消息流、联系人缓存、图片收发、AI 配置、Webhook 配置、保活设置
 - **桌面通知**：网页驻留后台时，可调用主流操作系统的原生系统通知
-- **投递保护**：24h 窗口和连续 10 条限制下，自动缓存受阻消息，并支持 `/pull` 补拉
+- **投递保护**：24h 窗口和连续 10 条限制下，自动缓存受阻消息，过期缓存自动标记丢弃，并支持 `/pull` 补拉
 - **可见化状态**：Web UI 展示 `已缓存 / 已补拉 / 已丢弃 / 可能已送达` 等投递标签
 - **API Token 鉴权**：支持 Bearer Token 或 `?token=`，适合公网和第三方集成
 - **本地持久化**：SQLite WAL 模式保存消息、联系人、投递状态和配置，适合轻量设备长期运行
@@ -239,7 +239,9 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 | 24 小时会话窗口 | 用户最后一条消息超过 24 小时后，Bot 不能主动下发消息，需要用户重新发一条消息恢复通道 |
 | 连续 10 条限制 | Bot 连续发送 10 条消息后，若用户未回复，继续发送会被阻断；用户回复任意内容后计数重置 |
 
-项目已把这些限制产品化处理：保活提醒、第 10 条末尾提醒、受阻消息缓存、`/pull` 补拉、投递状态标签，能降低丢消息概率，但不能突破接口规则
+项目已把这些限制产品化处理：保活提醒、第 10 条末尾提醒、受阻消息缓存、`/pull` 补拉、投递状态标签，能降低丢消息概率，但不能突破接口规则。
+
+缓存消息不会无限期保留。默认清理策略是：普通缓存 72 小时后标记为 `DISCARDED`，行情、保活、设备上下线等时效消息 24 小时后标记为 `DISCARDED`，图片缓存保留 7 天。清理只改变投递状态，不物理删除历史记录；可通过 `PENDING_MESSAGE_TTL_HOURS`、`PENDING_TIME_SENSITIVE_TTL_HOURS`、`PENDING_MEDIA_TTL_HOURS` 调整，设置为 `0` 表示不自动过期。
 
 ---
 

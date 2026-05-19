@@ -124,12 +124,17 @@ if [[ "$MODE" == "docker" ]]; then
   echo -e "  📋 查看日志:  docker logs -f wechat-bridge"
 else
   # ── 原生 Python 模式 ──
+  info "正在创建 Python 虚拟环境..."
+  if [ ! -x ".venv/bin/python" ]; then
+    python3 -m venv .venv || error "创建虚拟环境失败。Ubuntu/Debian 请先安装 python3-venv；macOS 请确认 Python 3 可用。"
+  fi
+
   info "正在安装 Python 依赖..."
   if [ -n "$PIP_MIRROR" ]; then
     info "使用镜像源: $PIP_MIRROR"
-    pip3 install -q -r app/requirements.txt -i "$PIP_MIRROR"
+    .venv/bin/python -m pip install -q -r app/requirements.txt -i "$PIP_MIRROR"
   else
-    pip3 install -q -r app/requirements.txt
+    .venv/bin/python -m pip install -q -r app/requirements.txt
   fi
 
   echo ""

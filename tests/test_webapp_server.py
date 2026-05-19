@@ -100,6 +100,15 @@ class _FakeBridge:
         self.load_contacts_called = True
 
 
+class _FakeAIManager:
+    def __init__(self):
+        self.calls = []
+
+    def one_shot(self, prompt, system_prompt=None):
+        self.calls.append((prompt, system_prompt))
+        return f"分析结果: {prompt}"
+
+
 class _JsonHandler:
     def __init__(self):
         self.status = None
@@ -108,6 +117,59 @@ class _JsonHandler:
     def _json_response(self, payload, status=200):
         self.status = status
         self.payload = payload
+
+
+class _Runtime:
+    def __init__(self, bot_id, bridge):
+        self.bot_id = bot_id
+        self.bridge = bridge
+        self.client = bridge.client
+        self.data_dir = f"/tmp/{bot_id}"
+
+
+class _FakeAccountManager:
+    def __init__(self, default_bot_id="bot-a"):
+        self.default_bot_id = default_bot_id
+        self.bridge_a = _FakeBridge()
+        self.bridge_a.client = _FakeClient(logged_in=True)
+        self.bridge_a.client.bot_id = "bot-a"
+        self.bridge_a.contacts = {"uid-a": "Alice"}
+        self.bridge_b = _FakeBridge()
+        self.bridge_b.client = _FakeClient(logged_in=True)
+        self.bridge_b.client.bot_id = "bot-b"
+        self.bridge_b.contacts = {"uid-b": "Bob"}
+        self._runtimes = {
+            "bot-a": _Runtime("bot-a", self.bridge_a),
+            "bot-b": _Runtime("bot-b", self.bridge_b),
+        }
+
+    @property
+    def runtimes(self):
+        return dict(self._runtimes)
+
+    def get_runtime(self, bot_id=None):
+        return self._runtimes.get(bot_id or self.default_bot_id)
+
+    def has_accounts(self):
+        return True
+
+    def any_logged_in(self):
+        return True
+
+    def list_accounts(self):
+        return [
+            {"bot_id": "bot-a", "logged_in": True, "is_default": 1 if self.default_bot_id == "bot-a" else 0},
+            {"bot_id": "bot-b", "logged_in": True, "is_default": 1 if self.default_bot_id == "bot-b" else 0},
+        ]
+
+    def set_default(self, bot_id):
+        if bot_id not in self._runtimes:
+            return False
+        self.default_bot_id = bot_id
+        return True
+
+    def logout(self, bot_id=None):
+        return self._runtimes.pop(bot_id or self.default_bot_id, None) is not None
 
 
 class QRStatusHandlerUnitTests(unittest.TestCase):
@@ -332,6 +394,61 @@ class WebAppServerTests(unittest.TestCase):
         self.assertEqual(saved["webhook_mode"], "all_messages")
         self.assertEqual(saved["webhook_timeout"], 9)
 
+    def test_api_ai_analyze_calls_one_shot(self):
+        self.bridge.ai_manager = _FakeAIManager()
+        payload = json.dumps({"prompt": "分析签到失败", "system_prompt": "你是青龙运维助手"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/ai_analyze",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+        )
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["result"], "分析结果: 分析签到失败")
+        self.assertEqual(data["text"], "分析结果: 分析签到失败")
+        self.assertEqual(self.bridge.ai_manager.calls, [("分析签到失败", "你是青龙运维助手")])
+
+    def test_api_ai_analyze_accepts_content_alias(self):
+        self.bridge.ai_manager = _FakeAIManager()
+        payload = json.dumps({"content": "分析内容字段"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/ai_analyze",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["result"], "分析结果: 分析内容字段")
+
+    def test_api_ai_analyze_requires_prompt(self):
+        self.bridge.ai_manager = _FakeAIManager()
+        payload = json.dumps({"prompt": ""}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/ai_analyze",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+        )
+
+        self.assertEqual(status, 400)
+        self.assertIn("缺少 prompt", body)
+
     def test_expired_qr_status_clears_matching_qr_cache(self):
         self.context.qr_cache.data = {"qrcode": "qr-expired", "qrcode_img_content": "https://example.com/qr"}
         self.context.qr_cache.updated_at = 123.0
@@ -380,6 +497,79 @@ class WebAppServerTests(unittest.TestCase):
         self.assertTrue(self.bridge.load_contacts_called)
         self.assertEqual(self.bridge.recent_messages, [])
         self.assertEqual(self.bridge._consecutive_send_count, {})
+
+
+class MultiAccountWebAppServerTests(unittest.TestCase):
+    def setUp(self):
+        self.manager = _FakeAccountManager()
+        self.context = WebAppContext(account_manager=self.manager, api_token="secret-token")
+        try:
+            self.server = ThreadingHTTPServer(("127.0.0.1", 0), BridgeHandler)
+        except PermissionError as exc:
+            raise unittest.SkipTest(f"socket bind not permitted in sandbox: {exc}")
+        self.server.app_context = self.context  # type: ignore[attr-defined]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
+
+    def _request(self, path, method="GET", data=None, headers=None):
+        req = urllib.request.Request(
+            self.base_url + path,
+            data=data,
+            headers=headers or {},
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                return resp.status, resp.headers, resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers, exc.read().decode("utf-8")
+
+    def test_send_without_bot_id_uses_default_account(self):
+        payload = json.dumps({"to": "Alice", "text": "hello default"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.manager.bridge_a.sent, [("Alice", "hello default", "api", "")])
+        self.assertEqual(self.manager.bridge_b.sent, [])
+
+    def test_send_with_bot_id_routes_to_selected_account(self):
+        payload = json.dumps({"bot_id": "bot-b", "to": "Bob", "text": "hello b"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.manager.bridge_b.sent, [("Bob", "hello b", "api", "")])
+        self.assertEqual(self.manager.bridge_a.sent, [])
+
+    def test_invalid_bot_id_returns_404(self):
+        payload = json.dumps({"bot_id": "missing", "to": "Bob", "text": "hello"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 404)
+        self.assertIn("账号不存在", body)
 
 
 if __name__ == "__main__":
