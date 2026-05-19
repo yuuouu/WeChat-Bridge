@@ -35,7 +35,27 @@ def _url_to_qr_base64(url: str) -> str:
 def render_qr_page(ctx: WebAppContext):
     """二维码登录页面"""
     # iLink 登录二维码有效期较短，缓存不能太久，否则微信端会提示二维码过期。
-    if not ctx.qr_cache.data or (time.time() - ctx.qr_cache.updated_at > QR_CACHE_TTL_SECONDS):
+    login_id = ""
+    if ctx.account_manager is not None:
+        try:
+            ctx.qr_cache.data = ctx.account_manager.get_or_create_login_qr()
+            ctx.qr_cache.updated_at = time.time()
+            login_id = ctx.qr_cache.data.get("login_id", "")
+        except Exception as e:
+            error_content = f"""
+  <div class="status-badge status-offline">
+    <span class="dot dot-red"></span> 获取二维码失败
+  </div>
+  <div class="info">
+    <div class="info-row">
+      <span class="info-label">错误信息</span>
+      <span class="info-value">{str(e)[:100]}</span>
+    </div>
+  </div>
+  <button class="refresh-btn" onclick="location.reload()">重试</button>
+"""
+            return HTML_TEMPLATE % (error_content, "")
+    elif not ctx.qr_cache.data or (time.time() - ctx.qr_cache.updated_at > QR_CACHE_TTL_SECONDS):
         try:
             ctx.qr_cache.data = ctx.client.get_qrcode()
             ctx.qr_cache.updated_at = time.time()
@@ -56,6 +76,7 @@ def render_qr_page(ctx: WebAppContext):
 
     qr_url = ctx.qr_cache.data.get("qrcode_img_content", "")
     qrcode_id = ctx.qr_cache.data.get("qrcode", "")
+    status_url = f"/api/accounts/qr_status?login_id={login_id}" if login_id else f"/api/qr_status?qrcode={qrcode_id}"
 
     # 将扫码 URL 转为 QR 码 base64 图片
     try:
@@ -87,7 +108,7 @@ def render_qr_page(ctx: WebAppContext):
     if (checking) return;
     checking = true;
     try {{
-      const resp = await fetch('/api/qr_status?qrcode={qrcode_id}');
+      const resp = await fetch('{status_url}');
       const data = await resp.json();
       if (data.logged_in) location.reload();
       else if (data.status === 'expired') location.href='/?refresh_qr=' + Date.now();

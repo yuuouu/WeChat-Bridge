@@ -19,6 +19,13 @@ def set_context(client: ILinkClient, bridge: WeChatBridge, api_token: str | None
     _app_context = WebAppContext(client=client, bridge=bridge, api_token=token)
 
 
+def set_account_manager(account_manager, api_token: str | None = None):
+    """由 main.py 注入多账号运行上下文。"""
+    global _app_context
+    token = api_token if api_token is not None else os.environ.get("API_TOKEN", "")
+    _app_context = WebAppContext(account_manager=account_manager, api_token=token)
+
+
 def _require_context() -> WebAppContext:
     if _app_context is None:
         raise RuntimeError("web context not initialized")

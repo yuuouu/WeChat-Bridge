@@ -15,6 +15,8 @@ from webapp.pages import render_auth_page, render_logged_in, render_qr_page
 
 logger = logging.getLogger(__name__)
 GET_API_ROUTES = {
+    "/api/accounts": api_handlers.handle_accounts,
+    "/api/accounts/qr_status": api_handlers.handle_account_qr_status,
     "/api/web_check": api_handlers.handle_web_check,
     "/api/status": api_handlers.handle_status,
     "/api/contacts": api_handlers.handle_contacts,
@@ -27,6 +29,11 @@ GET_API_ROUTES = {
 }
 
 POST_API_ROUTES = {
+    "/api/accounts/default": api_handlers.handle_account_default,
+    "/api/accounts/logout": api_handlers.handle_account_logout,
+    "/api/accounts/qr": api_handlers.handle_account_qr,
+    "/api/accounts/remark": api_handlers.handle_account_remark,
+    "/api/ai_analyze": api_handlers.handle_ai_analyze,
     "/api/web_auth": api_handlers.handle_web_auth,
     "/api/send": api_handlers.handle_send_post,
     "/api/typing": api_handlers.handle_typing,
@@ -53,6 +60,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
         """检查 API Token 鉴权，未配置 TOKEN 时直接放行。"""
         api_token = self._get_context().api_token
         if not api_token:
+            return True
+        if check_web_session(self, api_token, self._get_context().session_secret):
             return True
 
         auth = self.headers.get("Authorization", "")
@@ -94,7 +103,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 ctx.qr_cache.updated_at = 0.0
             if not check_web_session(self, ctx.api_token, ctx.session_secret):
                 self._html_response(render_auth_page())
-            elif ctx.client.logged_in:
+            elif ctx.account_manager is not None:
+                if ctx.has_accounts():
+                    self._html_response(render_logged_in())
+                else:
+                    self._html_response(render_qr_page(ctx))
+            elif ctx.client and ctx.client.logged_in:
                 self._html_response(render_logged_in())
             else:
                 self._html_response(render_qr_page(ctx))

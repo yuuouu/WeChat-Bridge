@@ -150,68 +150,49 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     padding: 0 1px;
   }
 
-  /* Contact Picker */
-  .contact-picker-wrap {
-    position: relative;
-    width: 160px;
-    flex-shrink: 0;
+  /* Contact List */
+  .contact-strip {
+    padding: 10px 16px;
+    background: rgba(0,0,0,0.12);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
   }
-  .contact-picker-btn {
+  .contact-list {
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 100%%;
-    background: #1e1e2d;
-    border: 1px solid rgba(255,255,255,0.08);
-    color: #e0e0ea;
-    border-radius: 10px;
-    padding: 10px 14px;
+    min-height: 40px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  .contact-list::-webkit-scrollbar { height: 4px; }
+  .contact-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); border-radius: 999px; }
+  .contact-empty {
+    color: #666;
     font-size: 13px;
-    cursor: pointer;
-    transition: all 0.2s;
-    text-align: left;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    padding: 8px 2px;
   }
-  .contact-picker-btn:hover, .contact-picker-btn.open { border-color: rgba(7,193,96,0.6); background: #252538; }
-  .contact-picker-btn .cp-arrow {
-    margin-left: auto;
-    font-size: 10px;
-    color: #888;
-    transition: transform 0.2s;
-    flex-shrink: 0;
-  }
-  .contact-picker-btn.open .cp-arrow { transform: rotate(180deg); }
-  .contact-dropdown {
-    display: none;
-    position: absolute;
-    bottom: calc(100%% + 6px);
-    left: 0;
-    width: 240px;
-    max-height: 260px;
-    overflow-y: auto;
-    background: #1e1e2d;
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 12px;
-    box-shadow: 0 -8px 32px rgba(0,0,0,0.5);
-    z-index: 50;
-    padding: 6px;
-    animation: fadeIn 0.15s;
-  }
-  .contact-dropdown.open { display: block; }
   .contact-item {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 9px 12px;
+    min-width: 150px;
+    max-width: 220px;
+    height: 40px;
+    padding: 0 12px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #e0e0ea;
     border-radius: 8px;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: all 0.15s;
     font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+    flex-shrink: 0;
   }
-  .contact-item:hover { background: rgba(255,255,255,0.06); }
-  .contact-item.active { background: rgba(7,193,96,0.12); }
+  .contact-item:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.14); }
+  .contact-item.active { background: rgba(7,193,96,0.14); border-color: rgba(7,193,96,0.55); }
   .contact-item .ci-dot {
     width: 8px; height: 8px;
     border-radius: 50%%;
@@ -672,8 +653,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .header h1 { font-size: 16px; }
     .header .logo { font-size: 24px; }
     .msg { max-width: 92%%; }
-    .contact-picker-wrap { width: 120px; }
-    .contact-dropdown { width: 200px; }
+    .contact-strip { padding: 8px 12px; }
+    .contact-item { min-width: 132px; max-width: 180px; }
     .chat-input-area { padding: 10px 12px; gap: 8px; }
     .delivery-summary { grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .delivery-panel { flex-direction: column; }

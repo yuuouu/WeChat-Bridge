@@ -15,13 +15,15 @@ def render_logged_in():
         <h1>WeChat Bridge</h1>
       </div>
       <div class="header-actions">
+        <select class="form-select" id="accountSelect" style="width:auto; min-width:150px; height:32px; padding:4px 8px;"></select>
+        <button class="ai-settings-btn" onclick="setDefaultAccount()">设为默认</button>
+        <button class="ai-settings-btn" onclick="openRemarkModal()">备注</button>
+        <button class="ai-settings-btn" onclick="openAccountLogin()">添加账号</button>
         <div class="status-badge status-online" id="connBadge">
           <span class="dot dot-green"></span> 已连接
         </div>
         <button class="ai-settings-btn" onclick="openAISettings()">⚙️ 设置</button>
-        <form action="/api/logout" method="POST" style="margin:0;">
-          <button type="submit" class="logout-btn">退出登录</button>
-        </form>
+        <button type="button" class="logout-btn" onclick="logoutCurrentAccount()">退出账号</button>
       </div>
     </div>
 
@@ -71,18 +73,14 @@ def render_logged_in():
         <span class="search-count" id="searchCount"></span>
         <button class="search-clear" id="searchClear" title="清除搜索">✕</button>
       </div>
+      <div class="contact-strip" id="contactStrip">
+        <div class="contact-list" id="contactList"></div>
+      </div>
       <div class="chat-messages" id="msgs">
         <!-- 动态加载消息 -->
         <div style="text-align:center; color:#666; font-size:12px; margin-top:20px;">服务启动，等待收发消息...</div>
       </div>
       <div class="chat-input-area">
-        <div class="contact-picker-wrap" id="contactPickerWrap">
-          <button class="contact-picker-btn" id="contactPickerBtn" type="button">
-            <span id="contactPickerLabel">选择联系人</span>
-            <span class="cp-arrow">▼</span>
-          </button>
-          <div class="contact-dropdown" id="contactDropdown"></div>
-        </div>
         <input type="hidden" id="contact" value="">
 
         <label for="imgUpload" class="img-upload-btn" title="发送图片">🖼️</label>
@@ -233,6 +231,32 @@ def render_logged_in():
     </div>
   </div>
 </div>
+
+<!-- Account Login Modal -->
+<div class="modal-overlay" id="accountModal">
+  <div class="modal" style="max-width:420px;">
+    <h2>添加微信账号</h2>
+    <div class="qr-container" id="accountQrBox" style="margin:18px auto; display:flex; justify-content:center;"></div>
+    <p class="hint" id="accountQrHint">请使用微信扫描二维码并在手机端确认</p>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeAccountLogin()">取消</button>
+      <button class="btn-save" onclick="openAccountLogin()">刷新二维码</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="remarkModal">
+  <div class="modal" style="max-width:380px;">
+    <h2>账号备注</h2>
+    <p class="hint" id="remarkBotIdHint" style="word-break:break-all; font-size:12px; color:#888; margin-bottom:4px;"></p>
+    <p class="hint" id="remarkUidHint" style="word-break:break-all; font-size:12px; color:#888; margin-bottom:12px;"></p>
+    <input type="text" id="remarkInput" class="form-input" placeholder="输入备注名称（留空则清除）" style="width:100%; box-sizing:border-box;" maxlength="40">
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeRemarkModal()">取消</button>
+      <button class="btn-save" onclick="saveRemark()">保存</button>
+    </div>
+  </div>
+</div>
 """
     # 动态轮询逻辑与发送请求
     js = """
@@ -248,6 +272,30 @@ def render_logged_in():
     let webhookEnabled = false;
     let telemetryEnabled = false;
     let keepaliveMinutes = 0;
+    let currentBotId = localStorage.getItem('currentBotId') || '';
+    let accounts = [];
+    let accountQrTimer = null;
+    let evtSource = null;
+
+    function apiUrl(path, extraParams={}) {
+      const params = new URLSearchParams(extraParams);
+      if (currentBotId) params.set('bot_id', currentBotId);
+      const query = params.toString();
+      return query ? `${path}?${query}` : path;
+    }
+
+    function resetAccountScopedState() {
+      knownMsgIds = new Set();
+      allMessages = [];
+      oldestLoadedId = null;
+      historyExhausted = false;
+      initialLoad = true;
+      contactMap = {};
+      deliveryStateMap = {};
+      contactIpt.value = '';
+      renderContactList();
+      msgsEl.innerHTML = '<div style="text-align:center; color:#666; font-size:12px; margin-top:20px;">正在加载账号消息...</div>';
+    }
 
     // 生成保活时间选择器选项
     (function initKAOptions() {
@@ -479,18 +527,20 @@ def render_logged_in():
     document.getElementById('aiModal').addEventListener('click', e => {
       if (e.target.id === 'aiModal') closeAISettings();
     });
+    document.getElementById('remarkModal').addEventListener('click', e => {
+      if (e.target.id === 'remarkModal') closeRemarkModal();
+    });
 
     const msgsEl = document.getElementById('msgs');
     const contactIpt = document.getElementById('contact');
     const textIpt = document.getElementById('ipt');
     const sendBtn = document.getElementById('sendBtn');
     const connBadge = document.getElementById('connBadge');
-    const contactPickerBtn = document.getElementById('contactPickerBtn');
-    const contactPickerLabel = document.getElementById('contactPickerLabel');
-    const contactDropdown = document.getElementById('contactDropdown');
+    const contactList = document.getElementById('contactList');
     const searchInput = document.getElementById('searchInput');
     const searchCount = document.getElementById('searchCount');
     const searchClear = document.getElementById('searchClear');
+    const accountSelect = document.getElementById('accountSelect');
 
     let knownMsgIds = new Set();
     let allMessages = [];  // sorted by time asc
@@ -509,30 +559,192 @@ def render_logged_in():
     };
     const deliveryPanel = document.getElementById('deliveryPanel');
 
-    // === Contact Picker ===
-    contactPickerBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const isOpen = contactDropdown.classList.toggle('open');
-      contactPickerBtn.classList.toggle('open', isOpen);
+    accountSelect.addEventListener('change', () => {
+      currentBotId = accountSelect.value;
+      localStorage.setItem('currentBotId', currentBotId);
+      resetAccountScopedState();
+      connectEvents();
+      fetchServiceStatus();
+      fetchContacts();
+      fetchMsgs();
     });
-    document.addEventListener('click', (e) => {
-      if (!document.getElementById('contactPickerWrap').contains(e.target)) {
-        contactDropdown.classList.remove('open');
-        contactPickerBtn.classList.remove('open');
+
+    async function loadAccounts() {
+      try {
+        const res = await fetch('/api/accounts?_t=' + Date.now());
+        const data = await res.json();
+        accounts = data.accounts || [];
+        const loggedInAccounts = accounts.filter(a => a.logged_in);
+        const defaultBotId = loggedInAccounts.some(a => a.bot_id === data.default_bot_id) ? data.default_bot_id : '';
+        if (!loggedInAccounts.some(a => a.bot_id === currentBotId)) {
+          currentBotId = defaultBotId || (loggedInAccounts[0] && loggedInAccounts[0].bot_id) || '';
+        }
+        if (currentBotId) {
+          localStorage.setItem('currentBotId', currentBotId);
+        } else {
+          localStorage.removeItem('currentBotId');
+        }
+        accountSelect.innerHTML = '';
+        loggedInAccounts.forEach(account => {
+          const opt = document.createElement('option');
+          opt.value = account.bot_id;
+          const label = account.remark || (account.ilink_user_id ? account.ilink_user_id.substring(0, 16) : account.bot_id.substring(0, 16));
+          const suffix = account.is_default ? ' · 默认' : '';
+          opt.textContent = `${label}${suffix}`;
+          opt.title = `Bot: ${account.bot_id}\nUID: ${account.ilink_user_id || '—'}`;
+          accountSelect.appendChild(opt);
+        });
+        accountSelect.value = currentBotId;
+        accountSelect.disabled = loggedInAccounts.length === 0;
+      } catch(e) {}
+    }
+
+    async function setDefaultAccount() {
+      if (!currentBotId) return;
+      const res = await fetch('/api/accounts/default', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({bot_id: currentBotId})
+      });
+      if (res.ok) {
+        showToast('默认账号已更新');
+        await loadAccounts();
+      } else {
+        const data = await res.json();
+        showToast(data.error || '设置默认账号失败', 'error');
       }
-    });
-    function selectContact(name) {
-      contactIpt.value = name;
-      contactPickerLabel.textContent = name || '选择联系人';
-      contactDropdown.classList.remove('open');
-      contactPickerBtn.classList.remove('open');
+    }
+
+    function openRemarkModal() {
+      if (!currentBotId) return;
+      const account = accounts.find(a => a.bot_id === currentBotId);
+      document.getElementById('remarkBotIdHint').textContent = `Bot ID: ${currentBotId}`;
+      document.getElementById('remarkUidHint').textContent = `UID: ${(account && account.ilink_user_id) || '—'}`;
+      document.getElementById('remarkInput').value = (account && account.remark) || '';
+      document.getElementById('remarkModal').classList.add('active');
+      document.getElementById('remarkInput').focus();
+    }
+
+    function closeRemarkModal() {
+      document.getElementById('remarkModal').classList.remove('active');
+    }
+
+    async function saveRemark() {
+      if (!currentBotId) return;
+      const remark = document.getElementById('remarkInput').value;
+      const res = await fetch('/api/accounts/remark', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({bot_id: currentBotId, remark})
+      });
+      closeRemarkModal();
+      if (res.ok) {
+        showToast(remark.trim() ? '备注已保存' : '备注已清除');
+        await loadAccounts();
+      } else {
+        const data = await res.json();
+        showToast(data.error || '保存备注失败', 'error');
+      }
+    }
+
+    async function logoutCurrentAccount() {
+      if (!currentBotId) return;
+      const res = await fetch('/api/accounts/logout', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({bot_id: currentBotId})
+      });
+      if (res.ok) {
+        showToast('账号已退出');
+        currentBotId = '';
+        localStorage.removeItem('currentBotId');
+        await loadAccounts();
+        if (!currentBotId) {
+          location.href = '/';
+          return;
+        }
+        resetAccountScopedState();
+        connectEvents();
+        fetchServiceStatus();
+        fetchContacts();
+        fetchMsgs();
+      } else {
+        const data = await res.json();
+        showToast(data.error || '退出账号失败', 'error');
+      }
+    }
+
+    async function openAccountLogin() {
+      const modal = document.getElementById('accountModal');
+      const box = document.getElementById('accountQrBox');
+      const hint = document.getElementById('accountQrHint');
+      modal.classList.add('active');
+      box.innerHTML = '<div style="color:#999; padding:32px;">正在获取二维码...</div>';
+      hint.textContent = '请使用微信扫描二维码并在手机端确认';
+      if (accountQrTimer) clearInterval(accountQrTimer);
+      try {
+        const res = await fetch('/api/accounts/qr', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || '获取二维码失败');
+        box.innerHTML = `<img src="data:image/png;base64,${data.qr_image_base64}" alt="QR Code" style="width:240px; height:240px;">`;
+        accountQrTimer = setInterval(async () => {
+          try {
+            const poll = await fetch('/api/accounts/qr_status?login_id=' + encodeURIComponent(data.login_id));
+            const status = await poll.json();
+            hint.textContent = status.message || '等待扫码';
+            if (status.status === 'confirmed') {
+              clearInterval(accountQrTimer);
+              accountQrTimer = null;
+              closeAccountLogin();
+              currentBotId = status.bot_id || currentBotId;
+              if (currentBotId) localStorage.setItem('currentBotId', currentBotId);
+              await loadAccounts();
+              resetAccountScopedState();
+              connectEvents();
+              fetchServiceStatus();
+              fetchContacts();
+              fetchMsgs();
+              showToast('账号登录成功');
+            } else if (status.status === 'expired') {
+              clearInterval(accountQrTimer);
+              accountQrTimer = null;
+              hint.textContent = '二维码已过期，请刷新';
+            }
+          } catch(e) {}
+        }, 3000);
+      } catch(e) {
+        box.innerHTML = `<div style="color:#ef4444; padding:24px;">${String(e.message || e).slice(0, 120)}</div>`;
+      }
+    }
+
+    function closeAccountLogin() {
+      document.getElementById('accountModal').classList.remove('active');
+      if (accountQrTimer) clearInterval(accountQrTimer);
+      accountQrTimer = null;
+    }
+
+    // === Contact List ===
+    function selectContact(userId) {
+      contactIpt.value = userId;
+      renderContactList();
       renderDeliveryStatus();
       textIpt.focus();
     }
-    function renderContactPicker() {
-      contactDropdown.innerHTML = '';
+    function renderContactList() {
+      contactList.innerHTML = '';
       const entries = Object.entries(contactMap);
-      const currentName = contactIpt.value;
+      if (!entries.length) {
+        contactIpt.value = '';
+        const empty = document.createElement('div');
+        empty.className = 'contact-empty';
+        empty.textContent = '暂无联系人';
+        contactList.appendChild(empty);
+        return;
+      }
+      const currentUserId = contactIpt.value;
+      if (!entries.some(([uid]) => uid === currentUserId)) {
+        contactIpt.value = entries[0][0];
+      }
       entries.forEach(([uid, name]) => {
         const ds = deliveryStateMap[uid];
         const status = ds ? ds.status : 'NORMAL';
@@ -540,16 +752,14 @@ def render_logged_in():
         let dotColor = '#07c160'; // green = normal
         if (['WARNED','BUFFERING'].includes(status)) dotColor = '#fbbf24';
         else if (status === 'READY_PULL') dotColor = '#818cf8';
-        const item = document.createElement('div');
-        item.className = 'contact-item' + (name === currentName ? ' active' : '');
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'contact-item' + (uid === contactIpt.value ? ' active' : '');
+        item.title = name;
         item.innerHTML = `<span class="ci-dot" style="background:${dotColor}"></span><span class="ci-name">${name}</span>${pending > 0 ? `<span class="ci-badge">${pending}条</span>` : ''}`;
-        item.addEventListener('click', () => selectContact(name));
-        contactDropdown.appendChild(item);
+        item.addEventListener('click', () => selectContact(uid));
+        contactList.appendChild(item);
       });
-      // auto-select single contact
-      if (entries.length === 1 && !contactIpt.value) {
-        selectContact(entries[0][1]);
-      }
     }
 
     // === Search ===
@@ -658,7 +868,7 @@ def render_logged_in():
       if (m.meta && m.meta.blocked_reason === 'quota_10') tags.push('<span class="msg-tag warning">10条限制</span>');
       if (m.meta && m.meta.blocked_reason === 'api_limit') tags.push('<span class="msg-tag warning">上游限制</span>');
       if (m.media) {
-        const mediaUrl = '/media/' + encodeURIComponent(m.media);
+        const mediaUrl = apiUrl('/media/' + encodeURIComponent(m.media));
         const isVideo = /\\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media);
         if (isVideo) {
           bubbleContent = bubbleContent.replace(
@@ -713,7 +923,7 @@ def render_logged_in():
       const btn = document.getElementById('loadMoreBtn');
       if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
       try {
-        const res = await fetch(`/api/messages?before_id=${oldestLoadedId}&limit=200&_t=` + Date.now());
+        const res = await fetch(apiUrl('/api/messages', {before_id: oldestLoadedId, limit: 200, _t: Date.now()}));
         const data = await res.json();
         const older = data.messages.filter(m => !knownMsgIds.has(m.msg_id));
         if (older.length === 0) {
@@ -787,7 +997,7 @@ def render_logged_in():
 
     async function fetchServiceStatus() {
       try {
-        const res = await fetch('/api/status?_t=' + Date.now());
+        const res = await fetch(apiUrl('/api/status', {_t: Date.now()}));
         const data = await res.json();
         latestServiceStatus = data;
         document.getElementById('pendingTotal').textContent = data.pending_total || 0;
@@ -806,18 +1016,18 @@ def render_logged_in():
 
     async function fetchContacts() {
       try {
-        const res = await fetch('/api/contacts?_t=' + Date.now());
+        const res = await fetch(apiUrl('/api/contacts', {_t: Date.now()}));
         const data = await res.json();
         contactMap = data.contacts || {};
         deliveryStateMap = data.delivery_states || {};
-        renderContactPicker();
+        renderContactList();
         renderDeliveryStatus();
       } catch (e) {}
     }
 
     async function fetchMsgs() {
       try {
-        const res = await fetch('/api/messages?_t=' + Date.now());
+        const res = await fetch(apiUrl('/api/messages', {_t: Date.now()}));
         const data = await res.json();
         let appended = false;
 
@@ -878,7 +1088,7 @@ def render_logged_in():
         const res = await fetch('/api/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(current)
+          body: JSON.stringify({...current, bot_id: currentBotId})
         });
         const data = await res.json();
         if (res.ok) {
@@ -911,7 +1121,7 @@ def render_logged_in():
       const text = textIpt.value.trim();
       if (!text) return;
       if (!to) {
-        showDialog('请先输入收件人名称\\n\\niLink API 限制：用户需要先给你发一条消息，系统才能获取其 user_id。\\n请在左侧联系人列表选择，或输入已经给你发过消息的联系人名称', 'warning');
+        showDialog('请先在顶部联系人中选择收件人\\n\\niLink API 限制：用户需要先给你发一条消息，系统才能获取其 user_id。', 'warning');
         return;
       }
       sendQueue.push({to, text});
@@ -931,7 +1141,7 @@ def render_logged_in():
         await fetch('/api/typing', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({to})
+          body: JSON.stringify({to, bot_id: currentBotId})
         });
       } catch (e) {}
     }
@@ -942,9 +1152,8 @@ def render_logged_in():
       if (!file) return;
 
       const to = contactIpt.value.trim();
-      // 这里不强制要求 to 存在，如果是单联系人后端可以兜底，但前端提示一下更好
       if (!to) {
-        showToast('请先选择或输入收件人', 'error');
+        showToast('请先在顶部联系人中选择收件人', 'error');
         imgUpload.value = ''; // 清除选择，以便可重复选同一张图
         return;
       }
@@ -952,12 +1161,13 @@ def render_logged_in():
       const formData = new FormData();
       formData.append('to', to);
       formData.append('image', file);
+      formData.append('bot_id', currentBotId);
 
       // 显示上传中的状态，用 toast
       showToast('图片上传发送中...');
 
       try {
-        const res = await fetch('/api/send_image', {
+        const res = await fetch(apiUrl('/api/send_image'), {
           method: 'POST',
           body: formData
         });
@@ -993,21 +1203,31 @@ def render_logged_in():
     textIpt.addEventListener('input', sendTypingStatus);
     textIpt.addEventListener('focus', sendTypingStatus);
 
-    fetchServiceStatus();
-    fetchContacts();
-    fetchMsgs();
+    async function initAccountView() {
+      await loadAccounts();
+      connectEvents();
+      fetchServiceStatus();
+      fetchContacts();
+      fetchMsgs();
+    }
+
+    initAccountView();
 
     // SSE EventSource for real-time updates
-    const evtSource = new EventSource('/api/events');
-    evtSource.onmessage = function(e) {
-      if (e.data === ": keepalive") return;
-      try {
-        const payload = JSON.parse(e.data);
-        if (['message_received', 'message_sent', 'ai_reply_ready'].includes(payload.event)) {
-          fetchMsgs();
-        }
-      } catch (err) {}
-    };
+    function connectEvents() {
+      if (evtSource) evtSource.close();
+      if (!currentBotId) return;
+      evtSource = new EventSource(apiUrl('/api/events'));
+      evtSource.onmessage = function(e) {
+        if (e.data === ": keepalive") return;
+        try {
+          const payload = JSON.parse(e.data);
+          if (['message_received', 'message_sent', 'ai_reply_ready'].includes(payload.event)) {
+            fetchMsgs();
+          }
+        } catch (err) {}
+      };
+    }
 
     // Fallback polling (less frequent)
     setInterval(fetchMsgs, 15000);
@@ -1024,15 +1244,16 @@ def render_logged_in():
     async function sendImageFile(file) {
       const to = contactIpt.value.trim();
       if (!to) {
-        showToast('请先选择或输入收件人', 'error');
+        showToast('请先在顶部联系人中选择收件人', 'error');
         return;
       }
       const formData = new FormData();
       formData.append('to', to);
       formData.append('image', file);
+      formData.append('bot_id', currentBotId);
       showToast('正在发送剪贴板图片...');
       try {
-        const res = await fetch('/api/send_image', { method: 'POST', body: formData });
+        const res = await fetch(apiUrl('/api/send_image'), { method: 'POST', body: formData });
         const data = await res.json();
         if (res.ok) {
           if (data.buffered) {

@@ -12,19 +12,19 @@ import uuid
 from urllib.parse import parse_qs
 
 import config as cfg
-import db as msg_db
 import media as media_mod
 from version import __version__
 from webapp.auth import check_web_session, make_session_cookie
 from webapp.markdown_utils import apply_markdown_mode
 from webapp.request_utils import parse_multipart
+from webapp.ui.qr_page import _url_to_qr_base64
 from webapp.webhook_parser import parse_webhook_payload
 
 logger = logging.getLogger(__name__)
 
 
 def _pick_default_contact(
-    ctx,
+    bridge,
     to: str,
     *,
     request_path: str = "",
@@ -34,9 +34,9 @@ def _pick_default_contact(
 ) -> str:
     if to:
         return to
-    selected = ctx.bridge.get_default_contact()
+    selected = bridge.get_default_contact()
     if selected:
-        ctx.bridge.record_default_recipient_decision(
+        bridge.record_default_recipient_decision(
             selected,
             request_path=request_path,
             source=source,
@@ -54,18 +54,18 @@ def _compose_title_text(title: str, text: str) -> str:
     return text
 
 
-def _multicast_send(ctx, to_str: str, text: str, *, source: str = "api", title: str = "") -> dict:
+def _multicast_send(bridge, to_str: str, text: str, *, source: str = "api", title: str = "") -> dict:
     targets = [item.strip() for item in to_str.split(",") if item.strip()]
     if not targets:
         return {"ok": False, "error": "无有效目标"}
 
     if len(targets) == 1:
-        return ctx.bridge.send(targets[0], text, source=source, title=title)
+        return bridge.send(targets[0], text, source=source, title=title)
 
     results = []
     success = 0
     for index, target in enumerate(targets):
-        result = ctx.bridge.send(target, text, source=source, title=title)
+        result = bridge.send(target, text, source=source, title=title)
         results.append({"to": target, **result})
         if result.get("ok"):
             success += 1
@@ -87,6 +87,39 @@ def _load_json(handler, body: bytes):
         return None
 
 
+def _bot_id_from(params=None, data=None) -> str:
+    if isinstance(data, dict) and data.get("bot_id"):
+        return str(data.get("bot_id") or "").strip()
+    if params:
+        return params.get("bot_id", [""])[0].strip()
+    return ""
+
+
+def _resolve_runtime(handler, ctx, params=None, data=None, *, require_logged_in: bool = False):
+    bot_id = _bot_id_from(params, data) or None
+    runtime = ctx.resolve_runtime(bot_id)
+    if runtime is None:
+        if bot_id:
+            handler._json_response({"ok": False, "error": f"账号不存在: {bot_id}"}, 404)
+        else:
+            handler._json_response({"ok": False, "error": "未登录"}, 401)
+        return None
+    if require_logged_in and not runtime.client.logged_in:
+        handler._json_response({"ok": False, "error": "未登录", "bot_id": runtime.bot_id}, 401)
+        return None
+    return runtime
+
+
+def _account_message(status: str) -> str:
+    return {
+        "wait": "等待扫码",
+        "scaned": "已扫码，请在微信确认",
+        "scaned_but_redirect": "正在重定向",
+        "expired": "二维码已过期",
+        "confirmed": "登录成功",
+    }.get(status or "", "")
+
+
 def handle_web_check(handler, ctx, params):
     handler._json_response(
         {
@@ -96,21 +129,191 @@ def handle_web_check(handler, ctx, params):
     )
 
 
+def handle_accounts(handler, ctx, params):
+    if not handler._check_api_token():
+        return
+    if ctx.account_manager is None:
+        runtime = ctx.resolve_runtime()
+        accounts = []
+        if runtime:
+            accounts.append(
+                {
+                    "bot_id": runtime.bot_id,
+                    "logged_in": runtime.client.logged_in,
+                    "is_default": 1,
+                    "contacts_count": len(runtime.bridge.contacts),
+                    "poll_running": runtime.bridge._running,
+                    "data_dir": runtime.data_dir,
+                }
+            )
+        handler._json_response({"accounts": accounts, "default_bot_id": runtime.bot_id if runtime else ""})
+        return
+    accounts = ctx.account_manager.list_accounts()
+    default_bot_id = ""
+    for account in accounts:
+        if account.get("is_default"):
+            default_bot_id = account.get("bot_id", "")
+            break
+    handler._json_response({"accounts": accounts, "default_bot_id": default_bot_id})
+
+
+def handle_account_default(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+    data = _load_json(handler, body)
+    if data is None:
+        return
+    bot_id = str(data.get("bot_id") or "").strip()
+    if not bot_id:
+        handler._json_response({"ok": False, "error": "缺少 bot_id"}, 400)
+        return
+    if ctx.account_manager is None:
+        handler._json_response({"ok": False, "error": "当前运行模式不支持账号切换"}, 400)
+        return
+    if not ctx.account_manager.set_default(bot_id):
+        handler._json_response({"ok": False, "error": f"账号不存在: {bot_id}"}, 404)
+        return
+    handler._json_response({"ok": True, "bot_id": bot_id})
+
+
+def handle_account_logout(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+    data = _load_json(handler, body)
+    if data is None:
+        return
+    bot_id = str(data.get("bot_id") or "").strip() or None
+    if ctx.account_manager is None:
+        runtime = ctx.resolve_runtime(bot_id)
+        if not runtime:
+            handler._json_response({"ok": False, "error": "账号不存在"}, 404)
+            return
+        runtime.bridge.record_account_event("logout", reason="web_logout")
+        runtime.client.clear_token()
+        ctx.qr_cache.data = None
+        ctx.qr_cache.updated_at = 0.0
+        handler._json_response({"ok": True})
+        return
+    if not ctx.account_manager.logout(bot_id):
+        handler._json_response({"ok": False, "error": "账号不存在"}, 404)
+        return
+    handler._json_response({"ok": True})
+
+
+def handle_account_qr(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+    if ctx.account_manager is None:
+        handler._json_response({"ok": False, "error": "当前运行模式不支持多账号扫码"}, 400)
+        return
+    try:
+        data = ctx.account_manager.create_login_qr()
+        qr_url = data.get("qrcode_img_content", "")
+        data["qr_image_base64"] = _url_to_qr_base64(qr_url) if qr_url else ""
+        handler._json_response({"ok": True, **data})
+    except Exception as exc:
+        handler._json_response({"ok": False, "error": str(exc)}, 500)
+
+
+def handle_ai_analyze(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+    data = _load_json(handler, body)
+    if data is None:
+        return
+    prompt = str(data.get("prompt") or data.get("text") or data.get("content") or "").strip()
+    system_prompt = str(data.get("system_prompt") or "").strip() or None
+    if not prompt:
+        handler._json_response({"ok": False, "error": "缺少 prompt"}, 400)
+        return
+    ai_manager = None
+    if ctx.account_manager is not None:
+        ai_manager = ctx.account_manager.ai_manager
+    elif ctx.bridge is not None:
+        ai_manager = ctx.bridge.ai_manager
+    if ai_manager is None:
+        handler._json_response({"ok": False, "error": "AI 未启用"}, 400)
+        return
+    try:
+        result = ai_manager.one_shot(prompt, system_prompt=system_prompt)
+        handler._json_response({"ok": True, "result": result, "text": result})
+    except Exception as exc:
+        handler._json_response({"ok": False, "error": str(exc)}, 500)
+
+
+def handle_account_remark(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+    data = _load_json(handler, body)
+    if data is None:
+        return
+    import db as db_mod
+
+    bot_id = str(data.get("bot_id") or "").strip()
+    remark = str(data.get("remark") or "")
+    if not bot_id:
+        handler._json_response({"ok": False, "error": "缺少 bot_id"}, 400)
+        return
+    if not db_mod.set_account_remark(bot_id, remark):
+        handler._json_response({"ok": False, "error": f"账号不存在: {bot_id}"}, 404)
+        return
+    handler._json_response({"ok": True, "bot_id": bot_id, "remark": remark.strip()})
+
+
+def handle_account_qr_status(handler, ctx, params):
+    if not handler._check_api_token():
+        return
+    if ctx.account_manager is None:
+        handler._json_response({"ok": False, "error": "当前运行模式不支持多账号扫码"}, 400)
+        return
+    login_id = params.get("login_id", [""])[0].strip()
+    if not login_id:
+        handler._json_response({"ok": False, "error": "缺少 login_id"}, 400)
+        return
+    try:
+        status_data = ctx.account_manager.poll_login_qr_status(login_id)
+        status = status_data.get("status")
+        if status == "confirmed":
+            ctx.qr_cache.data = None
+            ctx.qr_cache.updated_at = 0.0
+        handler._json_response(
+            {
+                "ok": True,
+                "status": status,
+                "logged_in": status == "confirmed",
+                "bot_id": status_data.get("bot_id", ""),
+                "message": _account_message(status),
+            }
+        )
+    except KeyError:
+        handler._json_response({"ok": False, "error": "登录会话不存在或已过期"}, 404)
+    except Exception as exc:
+        handler._json_response({"ok": False, "error": str(exc)}, 500)
+
+
 def handle_status(handler, ctx, params):
-    payload = ctx.bridge.get_runtime_status()
+    runtime = _resolve_runtime(handler, ctx, params)
+    if runtime is None:
+        return
+    payload = runtime.bridge.get_runtime_status()
     payload["version"] = __version__
+    if ctx.account_manager is not None:
+        payload["accounts"] = ctx.account_manager.list_accounts()
     handler._json_response(payload)
 
 
 def handle_contacts(handler, ctx, params):
     if not handler._check_api_token():
         return
-    contacts = ctx.bridge.get_ordered_contacts()
+    runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
+    if runtime is None:
+        return
+    contacts = runtime.bridge.get_ordered_contacts()
     handler._json_response(
         {
             "contacts": contacts,
-            "context_tokens": {k: v[:20] + "..." for k, v in ctx.bridge.context_tokens.items()},
-            "delivery_states": ctx.bridge.get_contact_delivery_summaries(),
+            "context_tokens": {k: v[:20] + "..." for k, v in runtime.bridge.context_tokens.items()},
+            "delivery_states": runtime.bridge.get_contact_delivery_summaries(),
         }
     )
 
@@ -118,16 +321,19 @@ def handle_contacts(handler, ctx, params):
 def handle_messages(handler, ctx, params):
     if not handler._check_api_token():
         return
+    runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
+    if runtime is None:
+        return
     limit = int(params.get("limit", ["200"])[0])
     before_id = params.get("before_id", [None])[0]
     if before_id:
         before_id = int(before_id)
-    messages = msg_db.get_messages(limit=limit, before_id=before_id)
+    messages = runtime.bridge.db.get_messages(limit=limit, before_id=before_id)
     handler._json_response({"messages": messages})
 
 
 def handle_get_ai_config(handler, ctx, params):
-    if not ctx.client.logged_in:
+    if not ctx.any_logged_in():
         handler._json_response({"error": "未登录"}, 401)
         return
 
@@ -147,13 +353,16 @@ def handle_qr_status(handler, ctx, params):
         return
 
     try:
+        if not ctx.client:
+            handler._json_response({"error": "legacy qr endpoint unavailable"}, 400)
+            return
         status_data = ctx.client.poll_qrcode_status(qrcode)
         if status_data.get("status") == "expired":
             cached_qrcode = (ctx.qr_cache.data or {}).get("qrcode")
             if cached_qrcode == qrcode:
                 ctx.qr_cache.data = None
                 ctx.qr_cache.updated_at = 0.0
-        if ctx.client.logged_in and status_data.get("status") == "confirmed":
+        if ctx.client.logged_in and status_data.get("status") == "confirmed" and ctx.bridge:
             ctx.bridge._setup_data_dir()
             ctx.bridge.record_account_event("login_confirmed", reason="qr_confirmed")
             ctx.bridge._load_contacts()
@@ -164,13 +373,7 @@ def handle_qr_status(handler, ctx, params):
             {
                 "status": status_data.get("status"),
                 "logged_in": ctx.client.logged_in,
-                "message": {
-                    "wait": "等待扫码",
-                    "scaned": "已扫码，请在微信确认",
-                    "scaned_but_redirect": "正在重定向",
-                    "expired": "二维码已过期",
-                    "confirmed": "登录成功",
-                }.get(status_data.get("status", ""), ""),
+                "message": _account_message(status_data.get("status", "")),
             }
         )
     except Exception as exc:
@@ -180,15 +383,15 @@ def handle_qr_status(handler, ctx, params):
 def handle_send_get(handler, ctx, params):
     if not handler._check_api_token():
         return
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
+    runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
+    if runtime is None:
         return
 
     title = params.get("title", [""])[0]
     text = params.get("text", [""])[0] or params.get("content", [""])[0]
     text = _compose_title_text(title, text)
     to = _pick_default_contact(
-        ctx,
+        runtime.bridge,
         params.get("to", [""])[0],
         request_path="/api/send",
         source="api",
@@ -208,22 +411,22 @@ def handle_send_get(handler, ctx, params):
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
-    result = _multicast_send(ctx, to, text, source="api", title=title)
+    result = _multicast_send(runtime.bridge, to, text, source="api", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
 def handle_push_get(handler, ctx, params):
     if not handler._check_api_token():
         return
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
+    runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
+    if runtime is None:
         return
 
     title = params.get("title", [""])[0]
     text = params.get("text", [""])[0] or params.get("content", [""])[0]
     final_text = _compose_title_text(title, text)
     to = _pick_default_contact(
-        ctx,
+        runtime.bridge,
         params.get("to", [""])[0],
         request_path="/api/push",
         source="api_push",
@@ -240,13 +443,17 @@ def handle_push_get(handler, ctx, params):
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
-    result = _multicast_send(ctx, to, final_text, source="api_push", title=title)
+    result = _multicast_send(runtime.bridge, to, final_text, source="api_push", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
 def handle_media(handler, ctx, path):
+    params = parse_qs(handler.path.split("?", 1)[1]) if "?" in handler.path else {}
+    runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
+    if runtime is None:
+        return
     filename = path[len("/media/") :]
-    filepath = media_mod.get_media_path(filename)
+    filepath = media_mod.get_media_path(filename, media_dir=getattr(runtime.bridge, "_media_dir", None))
     if not filepath:
         handler._json_response({"error": "file not found"}, 404)
         return
@@ -292,18 +499,18 @@ def handle_web_auth(handler, ctx, params, body):
 def handle_send_post(handler, ctx, params, body):
     if not handler._check_api_token():
         return
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
-        return
 
     data = _load_json(handler, body)
     if data is None:
+        return
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
         return
 
     text = data.get("text", "") or data.get("content", "")
     title = data.get("title", "")
     to = _pick_default_contact(
-        ctx,
+        runtime.bridge,
         data.get("to", ""),
         request_path="/api/send",
         source="api",
@@ -319,17 +526,16 @@ def handle_send_post(handler, ctx, params, body):
         return
 
     text = apply_markdown_mode(text, data.get("markdown"), data.get("markdown_mode"))
-    result = _multicast_send(ctx, to, text, source="api", title=title)
+    result = _multicast_send(runtime.bridge, to, text, source="api", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
 def handle_typing(handler, ctx, params, body):
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
-        return
-
     data = _load_json(handler, body)
     if data is None:
+        return
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
         return
 
     to = data.get("to", "")
@@ -337,12 +543,12 @@ def handle_typing(handler, ctx, params, body):
         handler._json_response({"ok": False, "error": "缺少 to 参数"}, 400)
         return
 
-    result = ctx.bridge.send_typing(to)
+    result = runtime.bridge.send_typing(to)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
 def handle_post_ai_config(handler, ctx, params, body):
-    if not ctx.client.logged_in:
+    if not ctx.any_logged_in():
         handler._json_response({"ok": False, "error": "未登录"}, 401)
         return
 
@@ -384,21 +590,32 @@ def handle_post_ai_config(handler, ctx, params, body):
         current["webhook_timeout"] = 5
 
     cfg.save_config(current)
-    if ctx.bridge.ai_manager:
+    if ctx.account_manager is not None:
+        for runtime in ctx.account_manager.runtimes.values():
+            if runtime.bridge.ai_manager:
+                runtime.bridge.ai_manager.clear_all_histories()
+    elif ctx.bridge and ctx.bridge.ai_manager:
         ctx.bridge.ai_manager.clear_all_histories()
     handler._json_response({"ok": True})
 
 
 def handle_ag_inbox(handler, ctx, params, body):
-    with ctx.bridge._ag_inbox_lock:
-        messages = ctx.bridge.ag_inbox
-        ctx.bridge.ag_inbox = []
+    runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
+    if runtime is None:
+        return
+    with runtime.bridge._ag_inbox_lock:
+        messages = runtime.bridge.ag_inbox
+        runtime.bridge.ag_inbox = []
     handler._json_response({"ok": True, "messages": messages})
 
 
 def handle_logout(handler, ctx, params, body):
-    ctx.bridge.record_account_event("logout", reason="web_logout")
-    ctx.client.clear_token()
+    if ctx.account_manager is not None:
+        bot_id = params.get("bot_id", [""])[0].strip() or None
+        ctx.account_manager.logout(bot_id)
+    elif ctx.bridge and ctx.client:
+        ctx.bridge.record_account_event("logout", reason="web_logout")
+        ctx.client.clear_token()
     ctx.qr_cache.data = None
     ctx.qr_cache.updated_at = 0.0
     handler.send_response(302)
@@ -409,15 +626,13 @@ def handle_logout(handler, ctx, params, body):
 def handle_push_post(handler, ctx, params, body):
     if not handler._check_api_token():
         return
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
-        return
 
     to = ""
     text = ""
     title = ""
     markdown = ""
     markdown_mode = ""
+    data = {}
     content_type = handler.headers.get("Content-Type", "")
     if content_type.startswith("application/json"):
         try:
@@ -436,12 +651,17 @@ def handle_push_post(handler, ctx, params, body):
         title = form_data.get("title", [""])[0]
         markdown = form_data.get("markdown", [""])[0]
         markdown_mode = form_data.get("markdown_mode", [""])[0]
+        data = {"bot_id": form_data.get("bot_id", [""])[0]}
+
+    runtime = _resolve_runtime(handler, ctx, params, locals().get("data", {}), require_logged_in=True)
+    if runtime is None:
+        return
 
     text = text or params.get("text", [""])[0] or params.get("content", [""])[0]
     title = title or params.get("title", [""])[0]
     final_text = _compose_title_text(title, text)
     to = _pick_default_contact(
-        ctx,
+        runtime.bridge,
         to or params.get("to", [""])[0],
         request_path="/api/push",
         source="api_push",
@@ -460,15 +680,12 @@ def handle_push_post(handler, ctx, params, body):
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
-    result = _multicast_send(ctx, to, final_text, source="api_push", title=title)
+    result = _multicast_send(runtime.bridge, to, final_text, source="api_push", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
 def handle_webhook(handler, ctx, path, params, body):
     if not handler._check_api_token():
-        return
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
         return
 
     schema = ""
@@ -480,6 +697,9 @@ def handle_webhook(handler, ctx, path, params, body):
         data = json.loads(body) if body else {}
     except Exception:
         handler._json_response({"ok": False, "error": "无效 JSON"}, 400)
+        return
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
         return
 
     text = parse_webhook_payload(data, schema)
@@ -494,7 +714,7 @@ def handle_webhook(handler, ctx, path, params, body):
 
     source = f"webhook:{schema or 'generic'}"
     to = _pick_default_contact(
-        ctx,
+        runtime.bridge,
         params.get("to", [""])[0],
         request_path="/api/webhook",
         source=source,
@@ -504,19 +724,17 @@ def handle_webhook(handler, ctx, path, params, body):
         handler._json_response({"ok": False, "error": "无可用联系人"}, 400)
         return
 
-    result = _multicast_send(ctx, to, text, source=source)
+    result = _multicast_send(runtime.bridge, to, text, source=source)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
 def handle_send_image(handler, ctx, params, body):
     if not handler._check_api_token():
         return
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
-        return
 
     to = ""
     image_data = None
+    data = {}
     content_type = handler.headers.get("Content-Type", "")
 
     if "multipart/form-data" in content_type:
@@ -536,8 +754,12 @@ def handle_send_image(handler, ctx, params, body):
     else:
         image_data = body
 
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
+        return
+
     to = _pick_default_contact(
-        ctx,
+        runtime.bridge,
         to or params.get("to", [""])[0],
         request_path="/api/send_image",
         source="image",
@@ -553,7 +775,7 @@ def handle_send_image(handler, ctx, params, body):
         handler._json_response({"ok": False, "error": "图片大小不能超过 10MB"}, 400)
         return
 
-    result = ctx.bridge.send_image(to, image_data)
+    result = runtime.bridge.send_image(to, image_data)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -564,6 +786,9 @@ def handle_register_commands(handler, ctx, params, body):
 
     data = _load_json(handler, body)
     if data is None:
+        return
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=False)
+    if runtime is None:
         return
 
     commands = data.get("commands", [])
@@ -596,7 +821,7 @@ def handle_register_commands(handler, ctx, params, body):
             continue
         if cmd in builtin or cmd.startswith("/ai ") or cmd.startswith("/keepalive "):
             continue
-        ctx.bridge._webhook_commands[cmd] = desc or cmd
+        runtime.bridge._webhook_commands[cmd] = desc or cmd
         registered.append(cmd)
 
     logger.info("外部命令注册: %s", registered)
@@ -611,18 +836,21 @@ def handle_unregister_commands(handler, ctx, params, body):
     data = _load_json(handler, body)
     if data is None:
         return
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=False)
+    if runtime is None:
+        return
 
     commands = data.get("commands", [])
     removed = []
     if not commands:
         # 空数组 = 清空全部
-        removed = list(ctx.bridge._webhook_commands.keys())
-        ctx.bridge._webhook_commands.clear()
+        removed = list(runtime.bridge._webhook_commands.keys())
+        runtime.bridge._webhook_commands.clear()
     else:
         for cmd in commands:
             cmd = cmd.strip() if isinstance(cmd, str) else ""
-            if cmd in ctx.bridge._webhook_commands:
-                del ctx.bridge._webhook_commands[cmd]
+            if cmd in runtime.bridge._webhook_commands:
+                del runtime.bridge._webhook_commands[cmd]
                 removed.append(cmd)
 
     logger.info("外部命令注销: %s", removed)
@@ -632,8 +860,8 @@ def handle_unregister_commands(handler, ctx, params, body):
 def handle_events(handler, ctx, params):
     if not handler._check_api_token():
         return
-    if not ctx.client.logged_in:
-        handler._json_response({"ok": False, "error": "未登录"}, 401)
+    runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
+    if runtime is None:
         return
 
     handler.send_response(200)
@@ -650,9 +878,9 @@ def handle_events(handler, ctx, params):
     sid = str(uuid.uuid4())
     from event_bus import EVENT_AI_REPLY_READY, EVENT_MESSAGE_RECEIVED, EVENT_MESSAGE_SENT
 
-    ctx.bridge.event_bus.subscribe(EVENT_MESSAGE_RECEIVED, _on_event, subscriber_id=sid)
-    ctx.bridge.event_bus.subscribe(EVENT_MESSAGE_SENT, _on_event, subscriber_id=sid)
-    ctx.bridge.event_bus.subscribe(EVENT_AI_REPLY_READY, _on_event, subscriber_id=sid)
+    runtime.bridge.event_bus.subscribe(EVENT_MESSAGE_RECEIVED, _on_event, subscriber_id=sid)
+    runtime.bridge.event_bus.subscribe(EVENT_MESSAGE_SENT, _on_event, subscriber_id=sid)
+    runtime.bridge.event_bus.subscribe(EVENT_AI_REPLY_READY, _on_event, subscriber_id=sid)
 
     try:
         while True:
@@ -668,6 +896,6 @@ def handle_events(handler, ctx, params):
     except Exception as exc:
         logger.debug("SSE 客户端断开连接: %s", exc)
     finally:
-        ctx.bridge.event_bus.unsubscribe(EVENT_MESSAGE_RECEIVED, sid)
-        ctx.bridge.event_bus.unsubscribe(EVENT_MESSAGE_SENT, sid)
-        ctx.bridge.event_bus.unsubscribe(EVENT_AI_REPLY_READY, sid)
+        runtime.bridge.event_bus.unsubscribe(EVENT_MESSAGE_RECEIVED, sid)
+        runtime.bridge.event_bus.unsubscribe(EVENT_MESSAGE_SENT, sid)
+        runtime.bridge.event_bus.unsubscribe(EVENT_AI_REPLY_READY, sid)

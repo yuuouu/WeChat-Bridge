@@ -232,6 +232,68 @@ class AIChatManager:
             full_text = full_text[:5200] + "\n...(字数超限截断)"
         return full_text
 
+    def one_shot(self, text: str, system_prompt: str | None = None) -> str:
+        """无历史的单次 AI 调用，用于程序化分析，不影响任何用户对话历史。"""
+        config = self._load_config()
+
+        if not config.get("enabled"):
+            raise RuntimeError("AI 未启用")
+        if not config.get("api_key"):
+            raise RuntimeError("AI 未配置 API Key，请在 Web 管理面板中设置")
+        if not self._check_daily_limit(config):
+            raise RuntimeError("今日 AI 调用额度已用尽")
+
+        sys_prompt = system_prompt or config.get("system_prompt", "你是一个有帮助的 AI 助手。")
+        provider = config["provider"]
+        model = config["model"]
+        api_key = config["api_key"]
+        from config import get_provider_info
+
+        provider_info = get_provider_info(provider)
+        effective_url = config.get("base_url") or provider_info["base_url"]
+        is_anthropic = provider_info.get("sdk") == "anthropic"
+
+        headers = {"Content-Type": "application/json"}
+        user_msg = {"role": "user", "content": text}
+
+        if is_anthropic:
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = "2023-06-01"
+            payload = {
+                "model": model,
+                "max_tokens": 1024,
+                "system": sys_prompt,
+                "messages": [user_msg],
+                "stream": False,
+            }
+            endpoint = f"{effective_url.rstrip('/')}/v1/messages"
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
+            payload = {
+                "model": model,
+                "messages": [{"role": "system", "content": sys_prompt}, user_msg],
+                "temperature": provider_info.get("temperature", 0.7),
+                "stream": False,
+            }
+            payload[provider_info.get("max_tokens_param", "max_tokens")] = 1024
+            payload.update(provider_info.get("extra_body", {}))
+            endpoint = effective_url
+            if "chat/completions" not in endpoint:
+                endpoint = f"{endpoint.rstrip('/')}/chat/completions"
+
+        resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if is_anthropic:
+            result = data["content"][0]["text"]
+        else:
+            result = data["choices"][0]["message"]["content"]
+
+        self._record_usage(config, len(text) + len(result))
+        logger.info("AI one_shot 完成: %s...", result[:40].replace("\n", " "))
+        return result
+
     def clear_history(self, user_id: str):
         """清除某用户的会话历史"""
         with self._lock:
