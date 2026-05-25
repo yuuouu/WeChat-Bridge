@@ -30,7 +30,8 @@ services:
       # 代理：容器出网经 sing-box docker-mixed-in (172.17.0.1:2080)
       - HTTPS_PROXY=http://172.17.0.1:2080
       - HTTP_PROXY=http://172.17.0.1:2080
-      - NO_PROXY=localhost,127.0.0.1,192.168.100.0/24,172.17.0.0/16,172.24.0.0/16
+      - NO_PROXY=localhost,127.0.0.1,172.21.0.1,192.168.100.0/24,172.17.0.0/16,172.24.0.0/16
+      - OKX_BOT_API_URL=http://172.21.0.1:8210
       # Gemini CLI 无人值守模式（跳过 workspace 信任交互提示）
       - GEMINI_CLI_TRUST_WORKSPACE=true
       # 跳过原生 keychain（容器内无 D-Bus/secret-service，keytar.setPassword 会挂起）

@@ -54,18 +54,106 @@ def _compose_title_text(title: str, text: str) -> str:
     return text
 
 
-def _multicast_send(bridge, to_str: str, text: str, *, source: str = "api", title: str = "") -> dict:
+def _account_label(account: dict) -> str:
+    return (str(account.get("remark") or "").strip() or str(account.get("bot_id") or "").strip())
+
+
+def _account_alias_payload(ctx, *, include_offline: bool = False) -> dict:
+    if ctx.account_manager is not None:
+        accounts = ctx.account_manager.list_accounts()
+    else:
+        runtime = ctx.resolve_runtime()
+        accounts = []
+        if runtime:
+            accounts.append(
+                {
+                    "bot_id": runtime.bot_id,
+                    "remark": "",
+                    "ilink_user_id": getattr(runtime.client, "user_id", "") or "",
+                    "logged_in": runtime.client.logged_in,
+                    "is_default": 1,
+                }
+            )
+
+    if not include_offline:
+        accounts = [account for account in accounts if bool(account.get("logged_in"))]
+
+    label_counts: dict[str, int] = {}
+    for account in accounts:
+        label = _account_label(account)
+        if label:
+            label_counts[label] = label_counts.get(label, 0) + 1
+
+    aliases = {}
+    ambiguous_aliases = {}
+    items = []
+    for account in accounts:
+        bot_id = str(account.get("bot_id") or "").strip()
+        if not bot_id:
+            continue
+        label = _account_label(account) or bot_id
+        item = {
+            "alias": label,
+            "bot_id": bot_id,
+            "remark": str(account.get("remark") or "").strip(),
+            "ilink_user_id": str(account.get("ilink_user_id") or "").strip(),
+            "logged_in": bool(account.get("logged_in")),
+            "is_default": bool(account.get("is_default")),
+        }
+        items.append(item)
+        if label_counts.get(label, 0) == 1:
+            aliases[label] = bot_id
+        else:
+            ambiguous_aliases.setdefault(label, []).append(bot_id)
+
+    default_bot_id = ""
+    for item in items:
+        if item["is_default"]:
+            default_bot_id = item["bot_id"]
+            break
+    return {
+        "ok": True,
+        "aliases": aliases,
+        "accounts": items,
+        "default_bot_id": default_bot_id,
+        "ambiguous_aliases": ambiguous_aliases,
+    }
+
+
+def _split_account_target(ctx, default_bridge, target: str):
+    if ctx.account_manager is None or ":" not in target:
+        return default_bridge, target, None
+    account_ref, contact_ref = target.split(":", 1)
+    account_ref = account_ref.strip()
+    contact_ref = contact_ref.strip()
+    if not account_ref or not contact_ref:
+        return default_bridge, target, None
+    runtime = ctx.resolve_runtime(account_ref)
+    if runtime is None or not runtime.client.logged_in:
+        return default_bridge, target, None
+    return runtime.bridge, contact_ref, runtime.bot_id
+
+
+def _send_target(ctx, default_bridge, target: str, text: str, *, source: str = "api", title: str = "") -> dict:
+    bridge, resolved_target, routed_bot_id = _split_account_target(ctx, default_bridge, target)
+    result = bridge.send(resolved_target, text, source=source, title=title)
+    if routed_bot_id:
+        result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_target}
+    return result
+
+
+def _multicast_send(ctx, bridge, to_str: str, text: str, *, source: str = "api", title: str = "") -> dict:
     targets = [item.strip() for item in to_str.split(",") if item.strip()]
     if not targets:
         return {"ok": False, "error": "无有效目标"}
 
     if len(targets) == 1:
-        return bridge.send(targets[0], text, source=source, title=title)
+        return _send_target(ctx, bridge, targets[0], text, source=source, title=title)
 
     results = []
     success = 0
     for index, target in enumerate(targets):
-        result = bridge.send(target, text, source=source, title=title)
+        result = _send_target(ctx, bridge, target, text, source=source, title=title)
         results.append({"to": target, **result})
         if result.get("ok"):
             success += 1
@@ -155,6 +243,13 @@ def handle_accounts(handler, ctx, params):
             default_bot_id = account.get("bot_id", "")
             break
     handler._json_response({"accounts": accounts, "default_bot_id": default_bot_id})
+
+
+def handle_account_aliases(handler, ctx, params):
+    if not handler._check_api_token():
+        return
+    include_offline = params.get("include_offline", [""])[0].strip() in {"1", "true", "yes"}
+    handler._json_response(_account_alias_payload(ctx, include_offline=include_offline))
 
 
 def handle_account_default(handler, ctx, params, body):
@@ -305,6 +400,40 @@ def handle_status(handler, ctx, params):
 def handle_contacts(handler, ctx, params):
     if not handler._check_api_token():
         return
+    show_all = params.get("all", [""])[0].strip() == "1"
+    if show_all and ctx.account_manager is not None:
+        aggregated_contacts = {}
+        context_tokens = {}
+        delivery_states = {}
+        import db as db_mod
+        bot_remarks = {}
+        try:
+            for acc in db_mod.list_bot_accounts():
+                bot_id = acc.get("bot_id")
+                if bot_id:
+                    bot_remarks[bot_id] = acc.get("remark") or acc.get("ilink_user_id") or bot_id[:8]
+        except Exception:
+            pass
+        for bot_id, runtime in ctx.account_manager.runtimes.items():
+            if not runtime.client.logged_in:
+                continue
+            bot_identifier = runtime.client.user_id or bot_id
+            remark = bot_remarks.get(bot_id, bot_id[:8])
+            for uid, name in runtime.bridge.get_ordered_contacts().items():
+                key = f"{bot_identifier}:{uid}"
+                aggregated_contacts[key] = f"{name} ({remark})"
+            for k, v in runtime.bridge.context_tokens.items():
+                context_tokens[f"{bot_identifier}:{k}"] = v[:20] + "..."
+            for k, v in runtime.bridge.get_contact_delivery_summaries().items():
+                delivery_states[f"{bot_identifier}:{k}"] = v
+        handler._json_response(
+            {
+                "contacts": aggregated_contacts,
+                "context_tokens": context_tokens,
+                "delivery_states": delivery_states,
+            }
+        )
+        return
     runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
     if runtime is None:
         return
@@ -411,7 +540,7 @@ def handle_send_get(handler, ctx, params):
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
-    result = _multicast_send(runtime.bridge, to, text, source="api", title=title)
+    result = _multicast_send(ctx, runtime.bridge, to, text, source="api", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -443,7 +572,7 @@ def handle_push_get(handler, ctx, params):
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
-    result = _multicast_send(runtime.bridge, to, final_text, source="api_push", title=title)
+    result = _multicast_send(ctx, runtime.bridge, to, final_text, source="api_push", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -526,7 +655,7 @@ def handle_send_post(handler, ctx, params, body):
         return
 
     text = apply_markdown_mode(text, data.get("markdown"), data.get("markdown_mode"))
-    result = _multicast_send(runtime.bridge, to, text, source="api", title=title)
+    result = _multicast_send(ctx, runtime.bridge, to, text, source="api", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -543,7 +672,10 @@ def handle_typing(handler, ctx, params, body):
         handler._json_response({"ok": False, "error": "缺少 to 参数"}, 400)
         return
 
-    result = runtime.bridge.send_typing(to)
+    bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
+    result = bridge.send_typing(resolved_to)
+    if routed_bot_id:
+        result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_to}
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -680,7 +812,7 @@ def handle_push_post(handler, ctx, params, body):
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
-    result = _multicast_send(runtime.bridge, to, final_text, source="api_push", title=title)
+    result = _multicast_send(ctx, runtime.bridge, to, final_text, source="api_push", title=title)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -724,7 +856,7 @@ def handle_webhook(handler, ctx, path, params, body):
         handler._json_response({"ok": False, "error": "无可用联系人"}, 400)
         return
 
-    result = _multicast_send(runtime.bridge, to, text, source=source)
+    result = _multicast_send(ctx, runtime.bridge, to, text, source=source)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -775,7 +907,10 @@ def handle_send_image(handler, ctx, params, body):
         handler._json_response({"ok": False, "error": "图片大小不能超过 10MB"}, 400)
         return
 
-    result = runtime.bridge.send_image(to, image_data)
+    bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
+    result = bridge.send_image(resolved_to, image_data)
+    if routed_bot_id:
+        result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_to}
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 

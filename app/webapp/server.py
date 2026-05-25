@@ -16,6 +16,7 @@ from webapp.pages import render_auth_page, render_logged_in, render_qr_page
 logger = logging.getLogger(__name__)
 GET_API_ROUTES = {
     "/api/accounts": api_handlers.handle_accounts,
+    "/api/accounts/aliases": api_handlers.handle_account_aliases,
     "/api/accounts/qr_status": api_handlers.handle_account_qr_status,
     "/api/web_check": api_handlers.handle_web_check,
     "/api/status": api_handlers.handle_status,

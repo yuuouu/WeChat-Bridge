@@ -148,22 +148,40 @@ class AccountManager:
                 reason="account_manager",
                 token_mtime=client.get_token_mtime() if hasattr(client, "get_token_mtime") else 0,
             )
-        self._ensure_default_account(preferred=bot_id)
+        self._ensure_default_account(preferred=bot_id, preserve_offline_current=True)
         return runtime
 
-    def _ensure_default_account(self, preferred: str | None = None):
+    def _ensure_default_account(self, preferred: str | None = None, preserve_offline_current: bool = False):
         if not self._runtimes:
             db.clear_default_bot_account()
             return
         current = db.get_default_bot_id()
         if current in self._runtimes:
-            db.set_default_bot_account(current)
+            return
+        if preserve_offline_current and current and db.get_bot_account(current):
             return
         selected = preferred if preferred in self._runtimes else next(iter(self._runtimes))
         db.set_default_bot_account(selected)
 
     def get_runtime(self, bot_id: str | None = None) -> AccountRuntime | None:
-        selected = bot_id or db.get_default_bot_id()
+        if bot_id:
+            if bot_id in self._runtimes:
+                return self._runtimes[bot_id]
+            remark_match = None
+            for acc in db.list_bot_accounts():
+                if acc.get("ilink_user_id") == bot_id or acc.get("remark") == bot_id:
+                    bid = acc.get("bot_id")
+                    if acc.get("ilink_user_id") == bot_id and bid in self._runtimes:
+                        return self._runtimes[bid]
+                    if acc.get("remark") == bot_id and bid in self._runtimes:
+                        if remark_match is not None:
+                            return None
+                        remark_match = self._runtimes[bid]
+            if remark_match is not None:
+                return remark_match
+            return None
+
+        selected = db.get_default_bot_id()
         if selected and selected in self._runtimes:
             return self._runtimes[selected]
         if not bot_id and len(self._runtimes) == 1:

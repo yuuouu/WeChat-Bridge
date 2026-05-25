@@ -133,10 +133,12 @@ class _FakeAccountManager:
         self.bridge_a = _FakeBridge()
         self.bridge_a.client = _FakeClient(logged_in=True)
         self.bridge_a.client.bot_id = "bot-a"
+        self.bridge_a.client.user_id = "wx-a"
         self.bridge_a.contacts = {"uid-a": "Alice"}
         self.bridge_b = _FakeBridge()
         self.bridge_b.client = _FakeClient(logged_in=True)
         self.bridge_b.client.bot_id = "bot-b"
+        self.bridge_b.client.user_id = "wx-b"
         self.bridge_b.contacts = {"uid-b": "Bob"}
         self._runtimes = {
             "bot-a": _Runtime("bot-a", self.bridge_a),
@@ -148,7 +150,15 @@ class _FakeAccountManager:
         return dict(self._runtimes)
 
     def get_runtime(self, bot_id=None):
-        return self._runtimes.get(bot_id or self.default_bot_id)
+        if not bot_id:
+            return self._runtimes.get(self.default_bot_id)
+        aliases = {
+            "主号": "bot-a",
+            "副号": "bot-b",
+            "wx-a": "bot-a",
+            "wx-b": "bot-b",
+        }
+        return self._runtimes.get(bot_id) or self._runtimes.get(aliases.get(bot_id, ""))
 
     def has_accounts(self):
         return True
@@ -158,8 +168,27 @@ class _FakeAccountManager:
 
     def list_accounts(self):
         return [
-            {"bot_id": "bot-a", "logged_in": True, "is_default": 1 if self.default_bot_id == "bot-a" else 0},
-            {"bot_id": "bot-b", "logged_in": True, "is_default": 1 if self.default_bot_id == "bot-b" else 0},
+            {
+                "bot_id": "bot-a",
+                "remark": "主号",
+                "ilink_user_id": "wx-a",
+                "logged_in": True,
+                "is_default": 1 if self.default_bot_id == "bot-a" else 0,
+            },
+            {
+                "bot_id": "bot-b",
+                "remark": "副号",
+                "ilink_user_id": "wx-b",
+                "logged_in": True,
+                "is_default": 1 if self.default_bot_id == "bot-b" else 0,
+            },
+            {
+                "bot_id": "bot-stale",
+                "remark": "离线号",
+                "ilink_user_id": "wx-stale",
+                "logged_in": False,
+                "is_default": 0,
+            },
         ]
 
     def set_default(self, bot_id):
@@ -530,6 +559,30 @@ class MultiAccountWebAppServerTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, exc.headers, exc.read().decode("utf-8")
 
+    def test_account_aliases_returns_remark_to_bot_map(self):
+        status, _, body = self._request(
+            "/api/accounts/aliases",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["aliases"], {"主号": "bot-a", "副号": "bot-b"})
+        self.assertEqual(data["default_bot_id"], "bot-a")
+        self.assertEqual(data["accounts"][0]["alias"], "主号")
+        self.assertNotIn("离线号", data["aliases"])
+
+    def test_account_aliases_can_include_offline_accounts(self):
+        status, _, body = self._request(
+            "/api/accounts/aliases?include_offline=1",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["aliases"]["离线号"], "bot-stale")
+        self.assertFalse(next(item for item in data["accounts"] if item["bot_id"] == "bot-stale")["logged_in"])
+
     def test_send_without_bot_id_uses_default_account(self):
         payload = json.dumps({"to": "Alice", "text": "hello default"}).encode("utf-8")
 
@@ -557,6 +610,37 @@ class MultiAccountWebAppServerTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(self.manager.bridge_b.sent, [("Bob", "hello b", "api", "")])
         self.assertEqual(self.manager.bridge_a.sent, [])
+
+    def test_send_with_bot_id_remark_routes_to_selected_account(self):
+        payload = json.dumps({"bot_id": "副号", "to": "Bob", "text": "hello remark"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.manager.bridge_b.sent, [("Bob", "hello remark", "api", "")])
+        self.assertEqual(self.manager.bridge_a.sent, [])
+
+    def test_send_with_to_remark_prefix_routes_to_selected_account(self):
+        payload = json.dumps({"to": "副号:Bob", "text": "hello alias"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.manager.bridge_b.sent, [("Bob", "hello alias", "api", "")])
+        self.assertEqual(self.manager.bridge_a.sent, [])
+        data = json.loads(body)
+        self.assertEqual(data["bot_id"], "bot-b")
+        self.assertEqual(data["resolved_to"], "Bob")
 
     def test_invalid_bot_id_returns_404(self):
         payload = json.dumps({"bot_id": "missing", "to": "Bob", "text": "hello"}).encode("utf-8")
