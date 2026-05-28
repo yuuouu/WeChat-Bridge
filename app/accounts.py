@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
+import shutil
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 import db
+from account_identity import account_storage_dir_name, safe_account_dir_name
 from bridge import WeChatBridge
 from ilink import ILinkClient
 
@@ -19,8 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_account_dir_name(bot_id: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.@-]+", "_", bot_id or "").strip("._/")
-    return safe or "unknown"
+    return safe_account_dir_name(bot_id)
 
 
 @dataclass
@@ -47,6 +48,124 @@ class LoginSession:
     created_at: float
 
 
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _load_json_dict(path: Path) -> dict:
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as exc:
+        logger.warning("读取 JSON 缓存失败 [%s]: %s", path, exc)
+    return {}
+
+
+def _merge_json_dict_file(src: Path, dst: Path) -> bool:
+    if not src.exists():
+        return False
+    src_data = _load_json_dict(src)
+    if not src_data:
+        return False
+    dst_data = _load_json_dict(dst)
+    merged = {**src_data, **dst_data}
+    if merged == dst_data:
+        return False
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def _copy_missing_tree(src: Path, dst: Path) -> bool:
+    if not src.exists():
+        return False
+    changed = False
+    for item in src.rglob("*"):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(src)
+        target = dst / rel
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+        changed = True
+    return changed
+
+
+def _sqlite_table_columns(conn: sqlite3.Connection, schema: str, table: str) -> list[str]:
+    try:
+        rows = conn.execute(f"PRAGMA {schema}.table_info({_quote_ident(table)})").fetchall()
+    except sqlite3.DatabaseError:
+        return []
+    return [row[1] for row in rows]
+
+
+def _merge_sqlite_table(conn: sqlite3.Connection, table: str, *, skip_columns: set[str] | None = None) -> bool:
+    src_cols = set(_sqlite_table_columns(conn, "src", table))
+    dst_cols = _sqlite_table_columns(conn, "main", table)
+    if not src_cols or not dst_cols:
+        return False
+    skip_columns = skip_columns or set()
+    columns = [col for col in dst_cols if col in src_cols and col not in skip_columns]
+    if not columns:
+        return False
+    quoted_cols = ", ".join(_quote_ident(col) for col in columns)
+    before = conn.total_changes
+    conn.execute(
+        f"INSERT OR IGNORE INTO {_quote_ident(table)} ({quoted_cols}) "
+        f"SELECT {quoted_cols} FROM src.{_quote_ident(table)}"
+    )
+    return conn.total_changes > before
+
+
+def _merge_sqlite_db(src_db: Path, dst_db: Path) -> bool:
+    if not src_db.exists():
+        return False
+    dst_db.parent.mkdir(parents=True, exist_ok=True)
+    if not dst_db.exists():
+        for suffix in ("", "-wal", "-shm"):
+            src_part = Path(f"{src_db}{suffix}")
+            if src_part.exists():
+                shutil.copy2(src_part, Path(f"{dst_db}{suffix}"))
+        return True
+
+    changed = False
+    conn = sqlite3.connect(str(dst_db))
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("ATTACH DATABASE ? AS src", (str(src_db),))
+        table_specs = {
+            "messages": {"id"},
+            "delivery_state": set(),
+            "overflow_sessions": set(),
+            "pending_messages": set(),
+            "contact_activity": set(),
+            "default_recipient_decisions": {"id"},
+        }
+        for table, skip_columns in table_specs.items():
+            changed = _merge_sqlite_table(conn, table, skip_columns=skip_columns) or changed
+        conn.commit()
+        conn.execute("DETACH DATABASE src")
+    finally:
+        conn.close()
+    return changed
+
+
+def _merge_account_dir(src_dir: Path, dst_dir: Path) -> bool:
+    if not src_dir.exists() or src_dir.resolve() == dst_dir.resolve():
+        return False
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    changed = False
+    changed = _merge_sqlite_db(src_dir / "messages.db", dst_dir / "messages.db") or changed
+    for name in ("contacts.json", "context_tokens.json", "activity.json"):
+        changed = _merge_json_dict_file(src_dir / name, dst_dir / name) or changed
+    changed = _copy_missing_tree(src_dir / "media", dst_dir / "media") or changed
+    return changed
+
+
 class AccountManager:
     """管理多个 iLink Bot 账号的客户端、Bridge 和扫码登录会话。"""
 
@@ -70,11 +189,117 @@ class AccountManager:
     def runtimes(self) -> dict[str, AccountRuntime]:
         return dict(self._runtimes)
 
-    def _account_dir(self, bot_id: str) -> str:
+    def _account_dir(self, bot_id: str, ilink_user_id: str = "") -> str:
+        return os.path.join(
+            self.data_base,
+            account_storage_dir_name(bot_id=bot_id, ilink_user_id=ilink_user_id),
+        )
+
+    def _legacy_account_dir(self, bot_id: str) -> str:
         return os.path.join(self.data_base, _safe_account_dir_name(bot_id))
 
-    def _token_file_for(self, bot_id: str) -> str:
-        return os.path.join(self._account_dir(bot_id), "token.json")
+    def _token_file_for(self, bot_id: str, ilink_user_id: str = "") -> str:
+        return os.path.join(self._account_dir(bot_id, ilink_user_id), "token.json")
+
+    def _candidate_legacy_dirs(self, bot_id: str, ilink_user_id: str) -> list[Path]:
+        stable_dir = Path(self._account_dir(bot_id, ilink_user_id)).resolve()
+        seen: set[str] = set()
+        candidates: list[Path] = []
+
+        def add(path: str | Path | None):
+            if not path:
+                return
+            candidate = Path(path)
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                return
+            key = str(resolved)
+            if key in seen or resolved == stable_dir or not candidate.exists() or not candidate.is_dir():
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        if bot_id:
+            add(self._legacy_account_dir(bot_id))
+
+        try:
+            account_rows = db.list_bot_accounts()
+        except Exception:
+            account_rows = []
+        for row in account_rows:
+            row_bot_id = str(row.get("bot_id") or "")
+            row_user_id = str(row.get("ilink_user_id") or "")
+            if (ilink_user_id and row_user_id == ilink_user_id) or (bot_id and row_bot_id == bot_id):
+                add(row.get("data_dir"))
+                if row_bot_id:
+                    add(self._legacy_account_dir(row_bot_id))
+
+        try:
+            token_paths = sorted(Path(self.data_base).glob("*/token.json"))
+        except Exception:
+            token_paths = []
+        for token_path in token_paths:
+            try:
+                data = json.loads(token_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            token_bot_id = str(data.get("bot_id") or "")
+            token_user_id = str(data.get("user_id") or "")
+            if (ilink_user_id and token_user_id == ilink_user_id) or (bot_id and token_bot_id == bot_id):
+                add(token_path.parent)
+
+        return candidates
+
+    def _migrate_account_data(self, bot_id: str, ilink_user_id: str = "", *, current_token_file: str | None = None):
+        stable_dir = Path(self._account_dir(bot_id, ilink_user_id))
+        current_token_resolved: Path | None = None
+        if current_token_file:
+            try:
+                current_token_resolved = Path(current_token_file).resolve()
+            except OSError:
+                current_token_resolved = None
+        migrated_from: list[str] = []
+        for src_dir in self._candidate_legacy_dirs(bot_id, ilink_user_id):
+            try:
+                if _merge_account_dir(src_dir, stable_dir):
+                    migrated_from.append(str(src_dir))
+                legacy_token = src_dir / "token.json"
+                stable_token = stable_dir / "token.json"
+                legacy_token_resolved = legacy_token.resolve() if legacy_token.exists() else None
+                if (
+                    legacy_token_resolved
+                    and legacy_token_resolved != stable_token.resolve()
+                    and legacy_token_resolved != current_token_resolved
+                ):
+                    legacy_token.unlink()
+            except Exception as exc:
+                logger.warning("迁移账号数据目录失败 [%s -> %s]: %s", src_dir, stable_dir, exc)
+
+        if current_token_file:
+            token_path = Path(current_token_file)
+            try:
+                stable_token = stable_dir / "token.json"
+                if token_path.exists() and token_path.resolve() != stable_token.resolve():
+                    stable_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(token_path, stable_token)
+                    token_path.unlink()
+            except Exception as exc:
+                logger.warning("迁移 token 文件失败 [%s -> %s]: %s", token_path, stable_dir, exc)
+
+        if migrated_from:
+            logger.info("账号数据已迁移到稳定目录 %s，来源: %s", stable_dir, ", ".join(migrated_from))
+
+    def _prepare_client_storage(self, client: ILinkClient) -> str:
+        bot_id = client.get_bot_id() or ""
+        if not bot_id:
+            raise RuntimeError("无法准备账号存储：缺少 bot_id")
+        ilink_user_id = getattr(client, "user_id", "") or ""
+        current_token_file = getattr(client, "token_file", None)
+        self._migrate_account_data(bot_id, ilink_user_id, current_token_file=current_token_file)
+        token_file = self._token_file_for(bot_id, ilink_user_id)
+        client.token_file = token_file
+        return token_file
 
     def _migrate_legacy_token(self):
         legacy = Path(self.data_base) / "token.json"
@@ -84,14 +309,18 @@ class AccountManager:
             data = json.loads(legacy.read_text(encoding="utf-8"))
             bot_token = data.get("bot_token")
             bot_id = data.get("bot_id") or ILinkClient._extract_bot_id(bot_token)
+            ilink_user_id = data.get("user_id") or ""
             if not bot_id:
                 logger.warning("旧 token.json 缺少 bot_id，跳过多账号迁移")
                 return
-            target = Path(self._token_file_for(bot_id))
+            target = Path(self._token_file_for(bot_id, ilink_user_id))
             target.parent.mkdir(parents=True, exist_ok=True)
+            _merge_account_dir(Path(self.data_base), target.parent)
             if not target.exists():
                 os.replace(str(legacy), str(target))
                 logger.info("旧 token.json 已迁移到账号目录: %s", target)
+            else:
+                legacy.unlink()
         except Exception as exc:
             logger.warning("迁移旧 token.json 失败: %s", exc)
 
@@ -101,12 +330,17 @@ class AccountManager:
         restored: list[AccountRuntime] = []
         for token_path in sorted(Path(self.data_base).glob("*/token.json")):
             try:
+                if not token_path.exists():
+                    continue
                 try:
                     client = self.client_factory(token_file=str(token_path))
                 except TypeError:
                     client = self.client_factory()
                 if not client.logged_in or not client.get_bot_id():
                     continue
+                self._prepare_client_storage(client)
+                if hasattr(client, "_save_token"):
+                    client._save_token()
                 runtime = self._start_runtime(client)
                 restored.append(runtime)
             except Exception as exc:
@@ -135,7 +369,11 @@ class AccountManager:
             bot_id=bot_id,
             client=client,
             bridge=bridge,
-            data_dir=getattr(bridge, "_data_dir", self._account_dir(bot_id)),
+            data_dir=getattr(
+                bridge,
+                "_data_dir",
+                self._account_dir(bot_id, getattr(client, "user_id", "") or ""),
+            ),
         )
         self._runtimes[bot_id] = runtime
         if db.get_bot_account(bot_id) is None:
@@ -302,7 +540,7 @@ class AccountManager:
             bot_id = session.client.get_bot_id()
             if not bot_id:
                 raise RuntimeError("登录失败：服务器未返回 bot_id")
-            session.client.token_file = self._token_file_for(bot_id)
+            session.client.token_file = self._prepare_client_storage(session.client)
             session.client._save_token()
             runtime = self._start_runtime(session.client)
             runtime.bridge.record_account_event("login_confirmed", reason="qr_confirmed")

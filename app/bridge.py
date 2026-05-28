@@ -21,6 +21,7 @@ import requests
 import config as cfg
 import db
 import media
+from account_identity import account_storage_dir_name
 from commands import MAGIC_WEBHOOK_COMMAND_PREFIX, CommandMixin
 from delivery import (  # noqa: F401 — re-export for backward compat
     MAX_CONSECUTIVE_SENDS,
@@ -88,12 +89,17 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self.plugin_registry.start_all()
 
     def _setup_data_dir(self, bot_id: str | None = None):
-        """根据 bot_id 设置数据目录，实现多账号数据隔离。"""
+        """根据稳定账号标识设置数据目录，实现多账号数据隔离。"""
         db.init_accounts_db(self.data_base)
         bid = bot_id or self.client.get_bot_id()
-        if bid:
-            self._data_dir = os.path.join(self.data_base, bid)
-            logger.info("数据目录按 bot_id 隔离: %s", self._data_dir)
+        ilink_user_id = getattr(self.client, "user_id", "") or ""
+        storage_dir = account_storage_dir_name(bot_id=bid or "", ilink_user_id=ilink_user_id)
+        if bid or ilink_user_id:
+            self._data_dir = os.path.join(self.data_base, storage_dir)
+            if ilink_user_id:
+                logger.info("数据目录按 ilink_user_id 隔离: %s", self._data_dir)
+            else:
+                logger.info("数据目录按 bot_id 隔离: %s", self._data_dir)
         else:
             self._data_dir = self.data_base
             logger.info("未检测到 bot_id，使用默认数据目录: %s", self._data_dir)

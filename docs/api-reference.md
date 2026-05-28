@@ -6,52 +6,52 @@
 
 > 如果设置了 `API_TOKEN`，所有 API 请求需携带 `Authorization: Bearer <TOKEN>` 请求头，或在 URL 中添加 `?token=<TOKEN>` 参数。
 
-## 多账号参数
+## 多 Bot 参数
 
-服务支持多个微信 Bot 账号同时在线。所有发送、联系人、消息、Webhook、图片和 SSE 接口都支持 `bot_id` 参数：
+服务支持多个微信 Bot 实例同时在线。`bot_id` 只用于选择由哪个 Bot 实例发送或读取数据，不代表微信联系人、好友或群聊。所有发送、接收目标缓存、消息、Webhook、图片和 SSE 接口都支持 `bot_id` 参数：
 
-- 不传 `bot_id`：使用默认账号，兼容旧脚本。
-- 传 `bot_id`：路由到指定账号；账号不存在返回 404。
+- 不传 `bot_id`：使用默认 Bot 实例，兼容旧脚本。
+- 传 `bot_id`：路由到指定 Bot 实例；实例不存在返回 404。
 
 ```bash
 curl -X POST http://localhost:5200/api/send \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{"bot_id": "你的bot_id", "to": "好友名称", "text": "Hello!"}'
+  -d '{"bot_id": "你的bot_id", "to": "微信user_id或显示名", "text": "Hello!"}'
 ```
 
-账号管理接口：
+Bot 实例管理接口：
 
 | 接口 | 说明 |
 |---|---|
-| `GET /api/accounts` | 查看账号列表、默认账号和在线状态 |
-| `POST /api/accounts/default` | 设置默认账号：`{"bot_id":"..."}` |
-| `POST /api/accounts/logout` | 退出指定账号：`{"bot_id":"..."}` |
-| `POST /api/accounts/qr` | 创建新增账号扫码登录二维码 |
-| `GET /api/accounts/qr_status?login_id=...` | 轮询新增账号扫码结果 |
+| `GET /api/accounts` | 查看 Bot 实例列表、默认实例和在线状态 |
+| `POST /api/accounts/default` | 设置默认 Bot 实例：`{"bot_id":"..."}` |
+| `POST /api/accounts/logout` | 退出指定 Bot 实例：`{"bot_id":"..."}` |
+| `POST /api/accounts/qr` | 创建新增 Bot 实例扫码登录二维码 |
+| `GET /api/accounts/qr_status?login_id=...` | 轮询新增 Bot 实例扫码结果 |
 
 ## 发送消息
 
 ```bash
-# 最简单：GET 请求，to 省略时自动发给第一个联系人
+# 最简单：GET 请求，to 省略时自动发给当前 Bot 最近记录的接收目标
 curl "http://localhost:5200/api/send?text=Hello!"
 
-# POST JSON（指定联系人）
+# POST JSON（指定接收目标）
 curl -X POST http://localhost:5200/api/send \
   -H "Content-Type: application/json" \
-  -d '{"to": "好友名称", "text": "Hello!"}'
+  -d '{"to": "微信user_id或显示名", "text": "Hello!"}'
 ```
 
 ### 进阶功能
 
 ```bash
-# 多播发送：逗号分隔多个联系人（每人间隔 0.5s 防风控）
+# 多播发送：逗号分隔多个接收目标（每个目标间隔 0.5s 防风控）
 curl "http://localhost:5200/api/send?to=老婆,家庭群&text=晚饭做好了"
 
 # Markdown 文本：发送 Markdown，由微信侧渲染常见文本格式
 curl -X POST http://localhost:5200/api/send \
   -H "Content-Type: application/json" \
-  -d '{"to": "好友名称", "markdown": true, "text": "# 重要通知\n\n**加粗** / `代码`\n\n- 事项 A\n- 事项 B"}'
+  -d '{"to": "微信user_id或显示名", "markdown": true, "text": "# 重要通知\n\n**加粗** / `代码`\n\n- 事项 A\n- 事项 B"}'
 
 # Markdown 整理：将普通通知整理为 Markdown
 curl "http://localhost:5200/api/send?text=【提醒】%0A🔹 事项A&markdown=normalize"
@@ -116,7 +116,7 @@ curl -X POST http://localhost:5200/api/ai_analyze \
 
 ## 快捷推送（兼容青龙面板 / ntfy / Bark）
 
-这个接口专为第三方系统集成设计。如果未显式指定 `to`，系统会自动将消息发送给通讯录中的**第一个联系人**。
+这个接口专为第三方系统集成设计。如果未显式指定 `to`，系统会自动将消息发送给当前 Bot 最近记录的接收目标。微信 Bot 本身没有“联系人列表”概念，这里的接收目标来自本服务收到过消息后的本地缓存。
 
 > ⚠️ 注意：每条推送都会消耗连续发送计数（10 条未回复则阻断）。如果你使用青龙面板或其他定时任务频繁推送，请确保用户及时回复以重置计数器。
 
@@ -130,7 +130,7 @@ curl "http://localhost:5200/api/push?title=提醒&content=该喝水了&token=YOU
 curl -X POST http://localhost:5200/api/push \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{"to": "好友名称", "title": "提醒", "content": "消息内容"}'
+  -d '{"to": "微信user_id或显示名", "title": "提醒", "content": "消息内容"}'
 ```
 
 ### 在青龙面板中使用
@@ -243,7 +243,9 @@ curl -X POST http://localhost:5200/api/webhook \
 
 ---
 
-## 获取联系人列表
+## 获取接收目标缓存
+
+`/api/contacts` 是历史兼容接口名，返回的是 WeChat Bridge 本地记录的接收目标缓存，而不是微信 Bot 的官方通讯录。缓存来源主要是当前 Bot 收到过消息的用户或群；多 Bot 场景下可用 `bot_id` 指定实例，或用 `all=1` 聚合所有在线 Bot 的缓存。
 
 ```bash
 curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:5200/api/contacts
@@ -264,18 +266,18 @@ curl http://localhost:5200/api/status
 | 环境变量 | 默认值 | 说明 |
 |---------|--------|------|
 | `PORT` | `5200` | 服务监听端口 |
-| `DATA_DIR` | `./data` | 多账号数据根目录，账号数据位于 `DATA_DIR/<bot_id>/` |
+| `DATA_DIR` | `./data` | 多 Bot 数据根目录，实例数据位于 `DATA_DIR/<稳定账号标识>/`，新版本优先使用 iLink 用户 ID，旧版 `bot_id` 目录会在登录/恢复时迁移 |
 | `WEBHOOK_URL` | _(空)_ | 外部 Webhook 地址，也可在 Web UI 中配置 |
 | `WEBHOOK_ENABLED` | `false` | 是否开启外部 Webhook 转发 |
 | `WEBHOOK_MODE` | `unknown_command` | 转发模式：`unknown_command` / `all_messages` |
 | `WEBHOOK_TIMEOUT` | `5` | Webhook 请求超时（秒，1~30） |
 | `API_TOKEN` | _(空)_ | API 鉴权 Token，未设置则无鉴权 |
-| `TOKEN_FILE` | `./data/token.json` | 旧版单账号凭证路径；启动后会迁移到账号目录 |
+| `TOKEN_FILE` | `./data/token.json` | 旧版单 Bot 凭证路径；启动后会迁移到实例目录 |
 | `AI_ENABLED` | `false` | 是否启用 AI 助手 |
 | `AI_PROVIDER` | `openai` | AI 厂商预设：`openai` / `gemini` / `claude` / `deepseek` / `minimax`，也可填自定义 OpenAI-compatible 厂商名 |
 | `AI_MODEL` | `gpt-4o-mini` | AI 模型名称 |
 | `AI_BASE_URL` | _(空)_ | 自定义 OpenAI-compatible `/v1` Base URL，留空使用预设厂商默认地址 |
-| `CONTACTS_FILE` | `/data/contacts.json` | 联系人缓存路径 |
+| `CONTACTS_FILE` | `/data/contacts.json` | 接收目标缓存路径（历史命名为 contacts） |
 | `AI_CONFIG_FILE` | `/data/ai_config.json` | AI 助手配置文件路径 |
 | `PENDING_MESSAGE_TTL_HOURS` | `72` | 普通缓存消息保留小时数，过期后标记为 `DISCARDED`；设为 `0` 表示不过期 |
 | `PENDING_TIME_SENSITIVE_TTL_HOURS` | `24` | 行情、保活、设备上下线等时效缓存消息保留小时数 |
@@ -295,7 +297,7 @@ curl http://localhost:5200/api/status
 | 普通消息 | 72 小时 | 默认类型 |
 | 媒体消息 | 168 小时 | `pending_messages.media` 不为空 |
 
-清理动作是软删除：`pending_messages.status` 更新为 `DISCARDED`，相关消息在历史中显示为“已丢弃”，不会物理删除记录。若某个 overflow session 的待拉取消息全部过期，该 session 会标记为 `DISCARDED`，对应联系人投递状态恢复为 `NORMAL`。
+清理动作是软删除：`pending_messages.status` 更新为 `DISCARDED`，相关消息在历史中显示为“已丢弃”，不会物理删除记录。若某个 overflow session 的待拉取消息全部过期，该 session 会标记为 `DISCARDED`，对应接收目标的投递状态恢复为 `NORMAL`。
 
 ---
 

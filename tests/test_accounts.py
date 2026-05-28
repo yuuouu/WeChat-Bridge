@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ if str(APP_ROOT) not in sys.path:
 
 install_crypto_stub()
 import db
+from account_identity import account_storage_dir_name
 from accounts import AccountManager
 
 
@@ -22,7 +24,13 @@ class _FakeBridge:
         self.data_base = data_base
         self.contacts = {}
         self._running = False
-        self._data_dir = os.path.join(data_base or "", client.get_bot_id() or "unknown")
+        self._data_dir = os.path.join(
+            data_base or "",
+            account_storage_dir_name(
+                bot_id=client.get_bot_id() or "",
+                ilink_user_id=getattr(client, "user_id", "") or "",
+            ),
+        )
         self.ai_manager = None
         self.stopped = False
         self.events = []
@@ -121,7 +129,7 @@ class AccountManagerTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def _write_token(self, bot_id: str):
-        token_dir = Path(self.tempdir.name) / bot_id
+        token_dir = Path(self.tempdir.name) / f"user-{bot_id}"
         token_dir.mkdir(parents=True)
         (token_dir / "token.json").write_text(
             json.dumps(
@@ -163,8 +171,94 @@ class AccountManagerTests(unittest.TestCase):
         self.assertEqual(status["bot_id"], "bot-new")
         runtime = manager.get_runtime("bot-new")
         self.assertIsNotNone(runtime)
-        self.assertTrue(Path(self.tempdir.name, "bot-new", "token.json").exists())
+        self.assertTrue(Path(self.tempdir.name, "user-new", "token.json").exists())
         self.assertTrue(runtime.bridge._running)
+
+    def test_qr_confirmation_migrates_previous_bot_dir_for_same_user(self):
+        old_dir = Path(self.tempdir.name) / "bot-old"
+        old_dir.mkdir(parents=True)
+        old_store = db.MessageStore(str(old_dir / "messages.db"))
+        old_store.save_message(
+            {
+                "msg_id": "msg-old",
+                "type": "recv",
+                "contact": "Alice",
+                "user_id": "alice",
+                "text": "old message",
+                "time": 100,
+            }
+        )
+        (old_dir / "contacts.json").write_text(json.dumps({"alice": "Alice"}), encoding="utf-8")
+        db.record_bot_account_event(
+            bot_id="bot-old",
+            ilink_user_id="user-new",
+            event="login_confirmed",
+            data_dir=str(old_dir),
+        )
+        db.close_db()
+
+        manager = AccountManager(
+            self.tempdir.name,
+            client_factory=_FakeLoginClient,
+            bridge_factory=_FakeBridge,
+        )
+        qr = manager.create_login_qr()
+
+        manager.poll_login_qr_status(qr["login_id"])
+
+        stable_dir = Path(self.tempdir.name) / "user-new"
+        self.assertTrue((stable_dir / "token.json").exists())
+        self.assertEqual(json.loads((stable_dir / "contacts.json").read_text(encoding="utf-8")), {"alice": "Alice"})
+        conn = sqlite3.connect(stable_dir / "messages.db")
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM messages WHERE msg_id = 'msg-old'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(count, 1)
+
+    def test_restore_migrates_legacy_bot_token_dir_to_user_dir(self):
+        legacy_dir = Path(self.tempdir.name) / "bot-legacy"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "token.json").write_text(
+            json.dumps(
+                {
+                    "bot_token": "bot-legacy@im.bot:hash",
+                    "base_url": "https://ilink.example.com",
+                    "bot_id": "bot-legacy",
+                    "user_id": "user-legacy",
+                }
+            )
+        )
+        legacy_store = db.MessageStore(str(legacy_dir / "messages.db"))
+        legacy_store.save_message(
+            {
+                "msg_id": "msg-legacy",
+                "type": "recv",
+                "contact": "Bob",
+                "user_id": "bob",
+                "text": "legacy message",
+                "time": 200,
+            }
+        )
+        db.close_db()
+        manager = AccountManager(
+            self.tempdir.name,
+            client_factory=_FakeLoginClient,
+            bridge_factory=_FakeBridge,
+        )
+
+        restored = manager.restore_accounts()
+
+        self.assertEqual([runtime.bot_id for runtime in restored], ["bot-legacy"])
+        stable_dir = Path(self.tempdir.name) / "user-legacy"
+        self.assertTrue((stable_dir / "token.json").exists())
+        self.assertFalse((legacy_dir / "token.json").exists())
+        conn = sqlite3.connect(stable_dir / "messages.db")
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM messages WHERE msg_id = 'msg-legacy'").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(count, 1)
 
     def test_logout_stops_only_selected_account(self):
         self._write_token("bot-a")
@@ -180,7 +274,7 @@ class AccountManagerTests(unittest.TestCase):
 
         self.assertIsNone(manager.get_runtime("bot-a"))
         self.assertIsNotNone(manager.get_runtime("bot-b"))
-        self.assertFalse(Path(self.tempdir.name, "bot-a", "token.json").exists())
+        self.assertFalse(Path(self.tempdir.name, "user-bot-a", "token.json").exists())
 
     def test_logout_default_promotes_remaining_account(self):
         self._write_token("bot-a")
