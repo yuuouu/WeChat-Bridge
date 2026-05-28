@@ -157,7 +157,6 @@ require_grep 'IMAGE_NAME: \$\{\{ github\.repository \}\}' "$ROOT_DIR/.github/wor
 require_grep 'platforms: linux/amd64,linux/arm64' "$ROOT_DIR/.github/workflows/docker-publish.yml"
 require_grep 'include \$\(TOPDIR\)/rules\.mk' "$META_DIR/Makefile"
 require_grep '^include ../../meta\.mk$' "$META_DIR/Makefile"
-require_grep '^PKG_VERSION:=1\.2\.0$' "$META_DIR/Makefile"
 APP_VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$ROOT_DIR/app/version.py")
 META_VERSION=$(sed -n 's/^PKG_VERSION:=//p' "$META_DIR/Makefile")
 LUCI_VERSION=$(sed -n 's/^PKG_VERSION:=//p' "$LUCI_DIR/Makefile")
