@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制应用代码
 COPY app/ .
+COPY examples/ ./examples/
 
 # Docker 数据路径（覆盖代码中的 ./data 默认值）
 ENV TOKEN_FILE=/data/token.json \

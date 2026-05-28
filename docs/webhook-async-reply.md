@@ -106,11 +106,11 @@ curl -X POST http://192.168.100.1:5200/api/send \
 
 ## 即跑示例
 
-推荐先跑完整的日记收集器示例，详细搭建步骤见 **[Webhook 日记示例](webhook-examples.md)**：
+推荐先看完整的会话式插件示例，详细说明见 **[插件示例：会话式便签](webhook-examples.md)**：
 
 | 示例 | 文件 | Webhook 模式 | 场景 |
 |-----|------|:---:|------|
-| **微信日记收集器** | [`webhook_journal.py`](../examples/webhook_journal.py) | `all_messages` | `/rj` 开始 → 收集文字/图片 → `/exit` 汇总 |
+| **会话式便签收集器** | [`session_notes.py`](../examples/session_notes.py) | 内置插件路由 | `/note` 开始 → 收集文字 → `/exit` 汇总 |
 | **无状态命令响应** | [`webhook_receiver.py`](../examples/webhook_receiver.py) | `unknown_command` | 一问一答：`/weather`、`/echo` |
 
 ---

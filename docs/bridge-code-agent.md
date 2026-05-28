@@ -254,22 +254,19 @@ graph LR
 
 ## 扩展：自定义插件
 
-Webhook Manager 支持从 `examples/` 目录**自动发现并加载**插件，无需修改 Manager 本身。
+WeChat Bridge 支持从 `examples/` 自动发现并加载插件，无需修改核心代码。
 
 ### 插件结构（三步）
 
 **1. 实现插件类**
 
 ```python
-# examples/my_plugin.py
-from webhook_manager import BasePlugin
+# examples/my-plugin/plugin.py
+from plugin_base import Plugin
 
-class MyPlugin(BasePlugin):
+class MyPlugin(Plugin):
     name = "my-plugin"                   # 插件标识，用于日志
-
-    @property
-    def commands(self) -> list[str]:
-        return ["/todo", "/note"]        # 本插件处理的命令
+    commands = ["/todo", "/note"]        # 本插件处理的命令
 
     def get_command_specs(self) -> list[dict]:
         return [
@@ -281,7 +278,7 @@ class MyPlugin(BasePlugin):
         from_user = payload["from_user"]
         command   = payload.get("command", "")
         args      = payload.get("args", "")
-        # 处理逻辑 ... 调用 /api/send 回写微信
+        self.send_reply(from_user, f"{command}: {args}")
 ```
 
 **2. 声明 PLUGIN_CLASS**
@@ -291,13 +288,19 @@ class MyPlugin(BasePlugin):
 PLUGIN_CLASS = MyPlugin
 ```
 
-**3. 启动**
+**3. 可选 manifest**
 
-```bash
-python3 examples/webhook_manager.py
+```json
+{
+  "enabled": true,
+  "entry": "plugin.py",
+  "config": {
+    "api_base": "https://example.com"
+  }
+}
 ```
 
-Manager 启动时自动扫描 `examples/*.py`，用 AST 预检（不执行文件）发现 `PLUGIN_CLASS` 声明，加载并注册。
+Bridge 启动时会扫描插件目录，用 AST 预检（不执行文件）发现 `PLUGIN_CLASS` 声明，加载并注册。完整插件规范见 [Plugin Development](plugin-development.md)。
 
 ---
 
@@ -313,9 +316,8 @@ flowchart TD
     E -->|无| G[静默丢弃]
 ```
 
-- **命令消息**：按注册的命令路由到对应插件，命令冲突时先加载的插件优先并记录警告
+- **命令消息**：按注册的命令路由到对应插件，命令冲突时先加载的插件优先
 - **普通消息**：路由到 `has_session(user_id)` 返回 `True` 的插件（用于会话中的对话）
-- **白名单过滤**：`ALLOWED_USERS` 在 Manager 层统一过滤，插件无需重复实现
 
 ---
 
@@ -399,14 +401,17 @@ AI CLI 未在 PATH 中。验证：`which gemini`。如果用 nvm / brew 安装�
 检查：
 1. 文件在 `examples/` 目录下，文件名不以 `_` 开头
 2. 在模块**最外层**（非函数/类内部）有 `PLUGIN_CLASS = YourClass` 赋值语句
-3. 运行 `python3 examples/webhook_manager.py` 观察日志中是否有 `plugin_load_error`
+3. 如果使用 manifest，确认 `plugin.json` 的 `entry` 文件存在，`enabled` 未设为 `false`
+4. 查看 Bridge 服务端日志中是否有 `加载插件失败`
 
 ---
 
 ## 安全说明
 
-- **白名单必填**：`ALLOWED_USERS` 为空时，任何人给 Bot 发消息都能触发 AI CLI 在你的电脑上执行代码。强烈建议设置。
-- **`yolo` 模式风险**：三个 CLI 均以自动执行模式运行，不会弹确认框。确保只有可信用户在白名单内。
+- **可信联系人**：只有把 Bot 暴露给可信联系人时才启用 Code Agent。任何能给 Bot 发消息的人都有机会触发本机 CLI。
+- **`yolo` 模式风险**：三个 CLI 均以自动执行模式运行，不会弹确认框。建议配合单独用户、受限工作区、容器或虚拟机使用。
+- **插件目录权限**：不要让未受信任用户写入 `examples/`，否则等价于允许其执行 Python 代码。
+- **敏感路径**：`project_map.json` 只放本机项目映射，不要提交到 GitHub。
 - **本地执行**：Manager 与 CLI 均运行在电脑本地，无数据上传到第三方（除 AI CLI 本身的 API 调用）。
 
 ---
@@ -414,6 +419,7 @@ AI CLI 未在 PATH 中。验证：`which gemini`。如果用 nvm / brew 安装�
 ## 相关文档
 
 - [异步 Webhook 集成指南](webhook-async-reply.md)
+- [Plugin Development](plugin-development.md)
 - [API 接口参考](api-reference.md)
 - [工作原理](architecture.md)
 - [iStoreOS 部署](istoreos.md)

@@ -21,7 +21,7 @@ from plugin_base import Plugin  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-FORWARD_URLS = os.environ.get("FORWARD_URLS", "http://192.168.100.1:5210/webhook").split(",")
+FORWARD_URLS = os.environ.get("FORWARD_URLS", "").split(",")
 
 
 class ForwarderPlugin(Plugin):

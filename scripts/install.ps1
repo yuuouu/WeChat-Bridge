@@ -71,10 +71,10 @@ function Download-FromProxy {
     } catch {
         Write-Err "Download failed. Check your network connection."
     }
-    if (Test-Path $INSTALL_DIR) { Remove-Item $INSTALL_DIR -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
-    Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
     $extracted = Join-Path $env:TEMP "WeChat-Bridge-main"
+    Remove-Item $extracted -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
     Get-ChildItem -Path $extracted | Copy-Item -Destination $INSTALL_DIR -Recurse -Force
     Remove-Item $zipFile, $extracted -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -90,10 +90,10 @@ function Download-FromGitHub {
         Download-FromProxy
         return
     }
-    if (Test-Path $INSTALL_DIR) { Remove-Item $INSTALL_DIR -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
-    Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
     $extracted = Join-Path $env:TEMP "WeChat-Bridge-main"
+    Remove-Item $extracted -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
     Get-ChildItem -Path $extracted | Copy-Item -Destination $INSTALL_DIR -Recurse -Force
     Remove-Item $zipFile, $extracted -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -211,4 +211,3 @@ if (($start -ne "n") -and ($start -ne "N")) {
     Write-Host "  Browser opened. Enjoy!" -ForegroundColor Green
     Write-Host ""
 }
-

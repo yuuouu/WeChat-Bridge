@@ -86,9 +86,8 @@ fi
 if [ -d "${INSTALL_DIR}/.git" ]; then
   warn "目录已存在，正在更新..."
   cd "${INSTALL_DIR}" && git pull --ff-only || {
-    warn "git pull 失败，回退到 CDN 代理下载..."
+    warn "git pull 失败，回退到 CDN 代理覆盖式下载..."
     cd - >/dev/null
-    rm -rf "${INSTALL_DIR}"
     download_from_proxy
   }
 elif $GITHUB_OK && command -v git &>/dev/null; then
@@ -99,8 +98,7 @@ elif $GITHUB_OK && command -v git &>/dev/null; then
   }
 elif $GITHUB_OK; then
   download_from_github || {
-    warn "下载失败，回退到 CDN 代理..."
-    rm -rf "${INSTALL_DIR}"
+    warn "下载失败，回退到 CDN 代理覆盖式下载..."
     download_from_proxy
   }
 else

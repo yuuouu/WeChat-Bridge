@@ -90,11 +90,13 @@ services:
     volumes:
       - ./data:/data
     environment:
+      - PORT=5200
+      - TOKEN_FILE=/data/token.json
+      - DATA_DIR=/data
+      - AI_CONFIG_FILE=/data/ai_config.json
       - WEBHOOK_URL=           # 可选：外部 Webhook 地址
-      - WEBHOOK_ENABLED=false  # 可选：是否启用 Webhook 转发
       - WEBHOOK_MODE=unknown_command  # 可选：unknown_command / all_messages
-      - WEBHOOK_TIMEOUT=5      # 可选：Webhook 请求超时（秒）
-      - API_TOKEN=             # 可选：API 鉴权 Token
+      - API_TOKEN=change-this-token    # 网络可访问时建议修改为强随机值
       - MARKDOWN_MODE=          # 可选：normalize 整理普通通知为 Markdown；plain 降级为纯文本；留空默认按 Markdown 发送
       - TZ=Asia/Shanghai
 EOF
@@ -104,7 +106,7 @@ docker compose up -d
 
 安装完成后，浏览器打开 `http://localhost:5200`，扫码登录即可。
 
-> Webhook 也可以在 Web 管理面板中配置。环境变量适合容器化部署统一管理，Web UI 适合单机快速启用或临时调试。
+> Webhook 也可以在 Web 管理面板中配置。环境变量适合容器化部署统一管理，Web UI 适合单机快速启用或临时调试。个人挂载、代理、AI CLI 凭据和内网服务地址建议放到未提交的 `docker-compose.override.yml`。
 
 ---
 
@@ -146,7 +148,9 @@ docker compose up -d
 ```
 
 **Windows 一键脚本更新：**
-如果安装时使用了 PowerShell 一键脚本，可直接在此机器上重新运行该安装命令。脚本会自动进行文件拉取与覆盖、更新依赖并重启服务，你的配置和 `data/` 目录将安全保留。
+如果安装时使用了 PowerShell 一键脚本，可直接在此机器上重新运行该安装命令。脚本会自动进行文件拉取与覆盖、更新依赖并重启服务。
+
+一键脚本更新采用覆盖式策略：上游新增文件会添加，同名文件会覆盖，安装目录中不同名的旧文件不会被删除。因此用户自己放在 `examples/` 中的私有插件只要不与上游同名，就会保留；如果同名，则以新版本为准。Git 安装不做额外处理，遵循 `git pull` 自身规则。
 
 ---
 
