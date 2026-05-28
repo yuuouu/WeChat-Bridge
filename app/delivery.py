@@ -28,7 +28,7 @@ TIME_SENSITIVE_PENDING_KEYWORDS = (
     "市场简报",
     "金价速报",
     "自选A股",
-    "okx-bot",
+    "交易提醒",
     "行情",
     "持仓",
     "设备断开",
@@ -582,16 +582,37 @@ class DeliveryMixin:
             summaries[user_id] = self.get_delivery_summary(user_id)
         return summaries
 
+    def get_visible_contact_delivery_summaries(self) -> dict[str, dict]:
+        summaries = {}
+        for user_id in self.get_visible_contacts():
+            summaries[user_id] = self.get_delivery_summary(user_id)
+        return summaries
+
+    def get_visible_delivery_stats(self) -> dict:
+        summaries = self.get_visible_contact_delivery_summaries()
+        return {
+            "pending_total": sum(int(item.get("pending_count") or 0) for item in summaries.values()),
+            "active_sessions": sum(1 for item in summaries.values() if item.get("active_overflow_session_id")),
+            "buffering_users": sum(
+                1 for item in summaries.values() if item.get("status") in ("WARNED", "BUFFERING", "READY_PULL")
+            ),
+        }
+
     def get_runtime_status(self) -> dict:
-        stats = self.db.get_global_delivery_stats()
+        stats = self.get_visible_delivery_stats()
+        all_stats = self.db.get_global_delivery_stats()
         return {
             "logged_in": self.client.logged_in,
             "bot_id": self.client.bot_id,
-            "contacts_count": len(self.contacts),
+            "contacts_count": len(self.get_visible_contacts()),
+            "contacts_total": len(self.contacts),
             "poll_running": self._running,
             "pending_total": stats["pending_total"],
             "active_sessions": stats["active_sessions"],
             "buffering_users": stats["buffering_users"],
+            "all_pending_total": all_stats["pending_total"],
+            "all_active_sessions": all_stats["active_sessions"],
+            "all_buffering_users": all_stats["buffering_users"],
         }
 
     # ── /pull 补拉 ──

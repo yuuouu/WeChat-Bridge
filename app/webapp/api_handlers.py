@@ -3,15 +3,19 @@ from __future__ import annotations
 """API route handlers。"""
 
 import base64
+import hmac
+import importlib.util
 import json
 import logging
 import mimetypes
 import queue
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import parse_qs
 
 import config as cfg
+import db
 import media as media_mod
 from version import __version__
 from webapp.auth import check_web_session, make_session_cookie
@@ -21,6 +25,7 @@ from webapp.ui.qr_page import _url_to_qr_base64
 from webapp.webhook_parser import parse_webhook_payload
 
 logger = logging.getLogger(__name__)
+_weather_module = None
 
 
 def _pick_default_contact(
@@ -55,7 +60,7 @@ def _compose_title_text(title: str, text: str) -> str:
 
 
 def _account_label(account: dict) -> str:
-    return (str(account.get("remark") or "").strip() or str(account.get("bot_id") or "").strip())
+    return str(account.get("remark") or "").strip() or str(account.get("bot_id") or "").strip()
 
 
 def _account_alias_payload(ctx, *, include_offline: bool = False) -> dict:
@@ -134,6 +139,94 @@ def _split_account_target(ctx, default_bridge, target: str):
     return runtime.bridge, contact_ref, runtime.bot_id
 
 
+def _normalize_command(command: str) -> str:
+    command = str(command or "").strip().split()[0].lower()
+    if command and not command.startswith("/"):
+        command = f"/{command}"
+    return command
+
+
+def _run_bridge_command(
+    ctx, default_bridge, target: str, command: str, args: str = "", *, source: str = "api_command"
+) -> dict:
+    bridge, resolved_target, routed_bot_id = _split_account_target(ctx, default_bridge, target)
+    resolved_user = bridge.find_user_id(resolved_target)
+    if not resolved_user:
+        return {
+            "ok": False,
+            "error": f"找不到联系人「{resolved_target}」。对方需先给你发过消息才会出现在联系人列表中",
+            "resolved_to": resolved_target,
+            **({"bot_id": routed_bot_id} if routed_bot_id else {}),
+        }
+
+    normalized_command = _normalize_command(command)
+    plugin_registry = getattr(bridge, "plugin_registry", None)
+    plugin = plugin_registry.route_command(normalized_command, resolved_user) if plugin_registry else None
+    if not plugin:
+        return {
+            "ok": False,
+            "error": f"未注册命令: {normalized_command}",
+            "resolved_to": resolved_user,
+            **({"bot_id": routed_bot_id} if routed_bot_id else {}),
+        }
+
+    command_args = str(args or "").strip()
+    text = f"{normalized_command} {command_args}".strip()
+    bot_id = bridge.client.get_bot_id() if hasattr(bridge, "client") else ""
+    payload = {
+        "from_user": resolved_user,
+        "from_name": bridge._contact_name(resolved_user),
+        "text": text,
+        "command": normalized_command,
+        "args": command_args,
+        "is_command": True,
+        "bot_id": bot_id,
+        "is_default": bot_id == (db.get_default_bot_id() or ""),
+        "source": source,
+        "msg_id": f"api-command-{uuid.uuid4().hex[:12]}",
+        "timestamp": int(time.time()),
+    }
+    accepted = bridge.plugin_registry.dispatch_command(plugin, payload)
+    return {
+        "ok": bool(accepted),
+        "command": normalized_command,
+        "args": command_args,
+        "plugin": plugin.name,
+        "resolved_to": resolved_user,
+        **({"bot_id": routed_bot_id or bot_id} if (routed_bot_id or bot_id) else {}),
+        **({} if accepted else {"error": "插件执行失败"}),
+    }
+
+
+def _load_weather_module():
+    global _weather_module
+    if _weather_module is not None:
+        return _weather_module
+
+    project_root = Path(__file__).resolve().parents[2]
+    module_path = project_root / "examples" / "webhook_receiver.py"
+    if not module_path.exists():
+        # 兼容 Docker 挂载情况 (./app:/app, ./examples:/app/examples)
+        module_path = Path(__file__).resolve().parents[1] / "examples" / "webhook_receiver.py"
+    if not module_path.exists():
+        raise RuntimeError("找不到天气插件模块")
+
+    spec = importlib.util.spec_from_file_location("bridge_weather_receiver", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("无法加载天气插件模块")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _weather_module = module
+    return module
+
+
+def _query_weather_snapshot(city: str) -> dict:
+    module = _load_weather_module()
+    if not hasattr(module, "build_weather_snapshot"):
+        raise RuntimeError("天气插件未提供结构化查询能力")
+    return module.build_weather_snapshot(city)
+
+
 def _send_target(ctx, default_bridge, target: str, text: str, *, source: str = "api", title: str = "") -> dict:
     bridge, resolved_target, routed_bot_id = _split_account_target(ctx, default_bridge, target)
     result = bridge.send(resolved_target, text, source=source, title=title)
@@ -183,6 +276,29 @@ def _bot_id_from(params=None, data=None) -> str:
     return ""
 
 
+def _truthy_param(params, name: str) -> bool:
+    return params.get(name, [""])[0].strip().lower() in {"1", "true", "yes"}
+
+
+def _contacts_payload(bridge, *, include_history: bool = False) -> dict:
+    if include_history or not hasattr(bridge, "get_visible_contacts"):
+        contacts = bridge.get_ordered_contacts()
+    else:
+        contacts = bridge.get_visible_contacts()
+
+    if include_history or not hasattr(bridge, "get_visible_contact_delivery_summaries"):
+        delivery_states = bridge.get_contact_delivery_summaries()
+    else:
+        delivery_states = bridge.get_visible_contact_delivery_summaries()
+
+    return {
+        "contacts": contacts,
+        "context_tokens": {k: v[:20] + "..." for k, v in bridge.context_tokens.items() if k in contacts},
+        "delivery_states": delivery_states,
+        "contacts_total": len(getattr(bridge, "contacts", contacts)),
+    }
+
+
 def _resolve_runtime(handler, ctx, params=None, data=None, *, require_logged_in: bool = False):
     bot_id = _bot_id_from(params, data) or None
     runtime = ctx.resolve_runtime(bot_id)
@@ -229,7 +345,12 @@ def handle_accounts(handler, ctx, params):
                     "bot_id": runtime.bot_id,
                     "logged_in": runtime.client.logged_in,
                     "is_default": 1,
-                    "contacts_count": len(runtime.bridge.contacts),
+                    "contacts_count": len(
+                        runtime.bridge.get_visible_contacts()
+                        if hasattr(runtime.bridge, "get_visible_contacts")
+                        else runtime.bridge.contacts
+                    ),
+                    "contacts_total": len(runtime.bridge.contacts),
                     "poll_running": runtime.bridge._running,
                     "data_dir": runtime.data_dir,
                 }
@@ -400,12 +521,14 @@ def handle_status(handler, ctx, params):
 def handle_contacts(handler, ctx, params):
     if not handler._check_api_token():
         return
-    show_all = params.get("all", [""])[0].strip() == "1"
+    show_all = _truthy_param(params, "all")
+    include_history = _truthy_param(params, "include_history")
     if show_all and ctx.account_manager is not None:
         aggregated_contacts = {}
         context_tokens = {}
         delivery_states = {}
         import db as db_mod
+
         bot_remarks = {}
         try:
             for acc in db_mod.list_bot_accounts():
@@ -419,12 +542,15 @@ def handle_contacts(handler, ctx, params):
                 continue
             bot_identifier = runtime.client.user_id or bot_id
             remark = bot_remarks.get(bot_id, bot_id[:8])
-            for uid, name in runtime.bridge.get_ordered_contacts().items():
+            payload = _contacts_payload(runtime.bridge, include_history=include_history)
+            for uid, name in payload["contacts"].items():
                 key = f"{bot_identifier}:{uid}"
                 aggregated_contacts[key] = f"{name} ({remark})"
             for k, v in runtime.bridge.context_tokens.items():
+                if k not in payload["contacts"]:
+                    continue
                 context_tokens[f"{bot_identifier}:{k}"] = v[:20] + "..."
-            for k, v in runtime.bridge.get_contact_delivery_summaries().items():
+            for k, v in payload["delivery_states"].items():
                 delivery_states[f"{bot_identifier}:{k}"] = v
         handler._json_response(
             {
@@ -437,14 +563,7 @@ def handle_contacts(handler, ctx, params):
     runtime = _resolve_runtime(handler, ctx, params, require_logged_in=True)
     if runtime is None:
         return
-    contacts = runtime.bridge.get_ordered_contacts()
-    handler._json_response(
-        {
-            "contacts": contacts,
-            "context_tokens": {k: v[:20] + "..." for k, v in runtime.bridge.context_tokens.items()},
-            "delivery_states": runtime.bridge.get_contact_delivery_summaries(),
-        }
-    )
+    handler._json_response(_contacts_payload(runtime.bridge, include_history=include_history))
 
 
 def handle_messages(handler, ctx, params):
@@ -609,7 +728,7 @@ def handle_web_auth(handler, ctx, params, body):
         return
 
     token = data.get("token", "")
-    if token != ctx.api_token:
+    if not hmac.compare_digest(token, ctx.api_token):
         handler._json_response({"ok": False, "error": "密码错误"}, 403)
         return
 
@@ -656,6 +775,64 @@ def handle_send_post(handler, ctx, params, body):
 
     text = apply_markdown_mode(text, data.get("markdown"), data.get("markdown_mode"))
     result = _multicast_send(ctx, runtime.bridge, to, text, source="api", title=title)
+    handler._json_response(result, 200 if result.get("ok") else 400)
+
+
+def handle_weather_query_get(handler, ctx, params):
+    if not handler._check_api_token():
+        return
+    city = str(params.get("city", [""])[0] or params.get("q", [""])[0]).strip()
+    if not city:
+        handler._json_response({"ok": False, "error": "缺少 city 参数"}, 400)
+        return
+    try:
+        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city)})
+    except Exception as exc:
+        logger.warning("天气结构化查询失败 [%s]: %s", city, exc)
+        handler._json_response({"ok": False, "error": str(exc)}, 500)
+
+
+def handle_weather_query_post(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+    data = _load_json(handler, body)
+    if data is None:
+        return
+    city = str(data.get("city") or data.get("q") or "").strip()
+    if not city:
+        handler._json_response({"ok": False, "error": "缺少 city 参数"}, 400)
+        return
+    try:
+        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city)})
+    except Exception as exc:
+        logger.warning("天气结构化查询失败 [%s]: %s", city, exc)
+        handler._json_response({"ok": False, "error": str(exc)}, 500)
+
+
+def handle_run_command(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+
+    data = _load_json(handler, body)
+    if data is None:
+        return
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
+        return
+
+    target = str(data.get("to") or data.get("target") or "").strip()
+    command = _normalize_command(str(data.get("command") or ""))
+    args = str(data.get("args") or "").strip()
+    source = str(data.get("source") or "api_command").strip() or "api_command"
+
+    if not target:
+        handler._json_response({"ok": False, "error": "缺少 to 参数"}, 400)
+        return
+    if not command:
+        handler._json_response({"ok": False, "error": "缺少 command 参数"}, 400)
+        return
+
+    result = _run_bridge_command(ctx, runtime.bridge, target, command, args, source=source)
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 

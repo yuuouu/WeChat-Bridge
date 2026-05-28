@@ -223,7 +223,11 @@ class AccountManager:
             logged_in = bool(runtime and runtime.client.logged_in)
             item["logged_in"] = logged_in
             item["poll_running"] = bool(runtime and runtime.bridge._running)
-            item["contacts_count"] = len(runtime.bridge.contacts) if runtime else 0
+            if runtime and hasattr(runtime.bridge, "get_visible_contacts"):
+                item["contacts_count"] = len(runtime.bridge.get_visible_contacts())
+                item["contacts_total"] = len(runtime.bridge.contacts)
+            else:
+                item["contacts_count"] = len(runtime.bridge.contacts) if runtime else 0
             if not logged_in:
                 item["status"] = "logged_out"
             item["is_default"] = 1 if logged_in and bot_id == default_bot_id else 0

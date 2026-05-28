@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,12 +27,25 @@ if not _EXAMPLES_DIR.exists():
     _EXAMPLES_DIR = Path(__file__).resolve().parent / "examples"
 
 
+@dataclass
+class PluginLoadSpec:
+    """插件加载规格。"""
+
+    path: Path
+    config: dict = field(default_factory=dict)
+    source: str = ""
+
+
 def discover_and_register_plugins(registry: PluginRegistry) -> None:
-    """自动发现并注册 examples 目录下的插件。"""
-    for path in sorted(_EXAMPLES_DIR.glob("*.py")):
-        if path.name.startswith("_"):
+    """自动发现并注册 examples 目录中的插件。"""
+    seen: set[Path] = set()
+    for load_spec in _iter_plugin_load_specs():
+        path = load_spec.path.resolve()
+        if path in seen:
             continue
+        seen.add(path)
         if not _has_plugin_class_decl(path):
+            logger.warning("跳过插件 [%s]：缺少 PLUGIN_CLASS", path)
             continue
         try:
             spec = importlib.util.spec_from_file_location(path.stem, str(path))
@@ -46,9 +61,54 @@ def discover_and_register_plugins(registry: PluginRegistry) -> None:
                 plugin = plugin_cls()
                 if not isinstance(plugin, Plugin):
                     plugin = LegacyPluginWrapper(plugin)
-                registry.register(plugin)
+                registry.register(plugin, config=load_spec.config)
+                logger.info("插件加载成功: %s (%s)", plugin.name, load_spec.source or path)
         except Exception as exc:
             logger.error("加载插件失败 [%s]: %s", path.name, exc)
+
+
+def _iter_plugin_load_specs() -> list[PluginLoadSpec]:
+    if not _EXAMPLES_DIR.exists() or not _EXAMPLES_DIR.is_dir():
+        return []
+    return sorted(_load_specs_from_dir(_EXAMPLES_DIR), key=lambda item: str(item.path))
+
+
+def _load_specs_from_dir(plugin_dir: Path) -> list[PluginLoadSpec]:
+    specs: list[PluginLoadSpec] = []
+    for manifest_path in sorted(plugin_dir.glob("*/plugin.json")):
+        spec = _load_manifest_spec(manifest_path)
+        if spec:
+            specs.append(spec)
+
+    for path in sorted(plugin_dir.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        specs.append(PluginLoadSpec(path=path, source=str(plugin_dir)))
+    return specs
+
+
+def _load_manifest_spec(manifest_path: Path) -> PluginLoadSpec | None:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.error("读取插件 manifest 失败 [%s]: %s", manifest_path, exc)
+        return None
+
+    if manifest.get("enabled", True) is False:
+        return None
+
+    entry = manifest.get("entry", "plugin.py")
+    path = (manifest_path.parent / entry).resolve()
+    if not path.exists():
+        logger.error("插件 manifest 入口不存在 [%s]: %s", manifest_path, entry)
+        return None
+
+    config = manifest.get("config", {})
+    if not isinstance(config, dict):
+        logger.error("插件 manifest config 必须是对象 [%s]", manifest_path)
+        return None
+
+    return PluginLoadSpec(path=path, config=config, source=str(manifest_path))
 
 
 def _has_plugin_class_decl(path: Path) -> bool:

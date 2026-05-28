@@ -47,8 +47,13 @@ class Plugin:
 
     name: str = "unnamed"
     description: str = ""
-    commands: list[str] = []  # 响应的命令列表，如 ["/rj", "/okx"]
+    commands: list[str] = []  # 响应的命令列表，如 ["/weather", "/echo"]
+    config: dict = {}  # 由 plugin.json 或注册方注入的插件配置
     _send_func = None  # 由 PluginRegistry 注入的 bridge.send 引用
+
+    def configure(self, config: dict | None = None) -> None:
+        """注入插件配置。子类可覆盖此方法做配置校验或派生字段初始化。"""
+        self.config = dict(config or {})
 
     def on_message(self, event: Event) -> None:
         """所有入站消息回调。event.data 包含: from_user, from_name, text, msg, media_paths"""
@@ -89,6 +94,10 @@ class Plugin:
         """
         pass
 
+    def on_error(self, exc: Exception, context: str = "") -> None:
+        """插件异常回调。默认只记录日志，子类可覆盖以告警或清理状态。"""
+        logger.error("插件异常 [%s/%s]: %s", self.name, context or "runtime", exc, exc_info=True)
+
     def send_reply(self, to_user: str, text: str, *, source: str = "plugin") -> dict:
         """回复消息。优先使用注入的 bridge.send，无需绕 HTTP。"""
         if self._send_func:
@@ -119,7 +128,7 @@ class PluginRegistry:
     def command_map(self) -> dict[str, list[Plugin]]:
         return dict(self._command_map)
 
-    def register(self, plugin: Plugin) -> None:
+    def register(self, plugin: Plugin, *, config: dict | None = None) -> None:
         """注册插件并自动绑定事件。"""
         from event_bus import (
             EVENT_AI_REPLY_READY,
@@ -128,8 +137,9 @@ class PluginRegistry:
             EVENT_MESSAGE_SENT,
         )
 
-        self._plugins.append(plugin)
         plugin._send_func = self._send_func
+        self._safe_plugin_call(plugin, "configure", config or {})
+        self._plugins.append(plugin)
         sid = f"plugin:{plugin.name}"
 
         # 自动绑定实现了的事件方法
@@ -191,18 +201,16 @@ class PluginRegistry:
     def start_all(self) -> None:
         """启动所有已注册插件。"""
         for plugin in self._plugins:
-            try:
-                plugin.on_start()
-            except Exception as exc:
-                logger.error("插件启动失败 [%s]: %s", plugin.name, exc)
+            self._safe_plugin_call(plugin, "on_start")
 
     def stop_all(self) -> None:
         """停止所有已注册插件。"""
         for plugin in self._plugins:
-            try:
-                plugin.on_stop()
-            except Exception as exc:
-                logger.error("插件停止异常 [%s]: %s", plugin.name, exc)
+            self._safe_plugin_call(plugin, "on_stop")
+
+    def dispatch_command(self, plugin: Plugin, payload: dict) -> bool:
+        """安全分发命令到插件，返回插件是否成功接收。"""
+        return self._safe_plugin_call(plugin, "handle", payload)
 
     def get_all_command_specs(self) -> list[dict]:
         """汇总所有插件的命令规格，用于 /help 显示。"""
@@ -236,6 +244,18 @@ class PluginRegistry:
             if plugin.has_session(from_user):
                 return plugin
         return None
+
+    def _safe_plugin_call(self, plugin: Plugin, method_name: str, *args, **kwargs) -> bool:
+        """统一捕获插件生命周期和命令处理异常，避免插件拖垮主流程。"""
+        try:
+            getattr(plugin, method_name)(*args, **kwargs)
+            return True
+        except Exception as exc:
+            try:
+                plugin.on_error(exc, method_name)
+            except Exception:
+                logger.error("插件异常处理失败 [%s/%s]", plugin.name, method_name, exc_info=True)
+            return False
 
 
 def _is_overridden(instance: Plugin, method_name: str) -> bool:

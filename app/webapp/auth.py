@@ -3,6 +3,7 @@ from __future__ import annotations
 """Web 鉴权与会话辅助函数。"""
 
 import hashlib
+import hmac
 
 
 def make_session_cookie(token: str, session_secret: str) -> str:
@@ -20,5 +21,5 @@ def check_web_session(handler, api_token: str, session_secret: str) -> bool:
         part = part.strip()
         if part.startswith("wb_session="):
             session_val = part[len("wb_session=") :]
-            return session_val == make_session_cookie(api_token, session_secret)
+            return hmac.compare_digest(session_val, make_session_cookie(api_token, session_secret))
     return False

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """HTTP server 与路由分发。"""
 
+import hmac
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -22,6 +23,7 @@ GET_API_ROUTES = {
     "/api/status": api_handlers.handle_status,
     "/api/contacts": api_handlers.handle_contacts,
     "/api/messages": api_handlers.handle_messages,
+    "/api/weather/query": api_handlers.handle_weather_query_get,
     "/api/ai_config": api_handlers.handle_get_ai_config,
     "/api/qr_status": api_handlers.handle_qr_status,
     "/api/send": api_handlers.handle_send_get,
@@ -37,6 +39,8 @@ POST_API_ROUTES = {
     "/api/ai_analyze": api_handlers.handle_ai_analyze,
     "/api/web_auth": api_handlers.handle_web_auth,
     "/api/send": api_handlers.handle_send_post,
+    "/api/commands/run": api_handlers.handle_run_command,
+    "/api/weather/query": api_handlers.handle_weather_query_post,
     "/api/typing": api_handlers.handle_typing,
     "/api/ai_config": api_handlers.handle_post_ai_config,
     "/api/ag_inbox": api_handlers.handle_ag_inbox,
@@ -66,12 +70,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return True
 
         auth = self.headers.get("Authorization", "")
-        if auth == f"Bearer {api_token}" or auth == api_token:
+        if hmac.compare_digest(auth, f"Bearer {api_token}") or hmac.compare_digest(auth, api_token):
             return True
 
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
-        if params.get("token", [""])[0] == api_token:
+        if hmac.compare_digest(params.get("token", [""])[0], api_token):
             return True
 
         self._json_response({"ok": False, "error": "Unauthorized: invalid or missing API token"}, 401)
@@ -92,7 +96,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
-    def do_GET(self):
+    def _do_GET_internal(self):
         ctx = self._get_context()
         parsed = urlparse(self.path)
         path = parsed.path
@@ -126,6 +130,18 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
         self._json_response({"error": "not found"}, 404)
 
+    def do_GET(self):
+        try:
+            self._do_GET_internal()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError) as exc:
+            logger.warning("客户端提前断开 GET 连接: %s", exc)
+        except Exception as exc:
+            logger.error("do_GET error: %s", exc, exc_info=True)
+            try:
+                self._json_response({"ok": False, "error": "Internal server error"}, 500)
+            except Exception:
+                pass
+
     def _do_POST_internal(self):
         ctx = self._get_context()
         parsed = urlparse(self.path)
@@ -151,12 +167,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError) as exc:
             logger.warning("客户端提前断开 POST 连接: %s", exc)
         except Exception as exc:
-            import traceback
-
-            traceback.print_exc()
-            logger.error("do_POST error: %s", exc)
+            logger.error("do_POST error: %s", exc, exc_info=True)
             try:
-                self._json_response({"ok": False, "error": f"Internal error: {exc}"}, 500)
+                self._json_response({"ok": False, "error": "Internal server error"}, 500)
             except Exception:
                 pass
 

@@ -245,7 +245,9 @@ class CommandMixin:
                     "bot_id": _bot_id,
                     "is_default": _bot_id == (db.get_default_bot_id() or ""),
                 }
-                plugin.handle(payload)
+                if not self.plugin_registry.dispatch_command(plugin, payload):
+                    failed_command = parts[0].lower()
+                    return f"## ⚠️ 插件执行失败\n\n- **命令**：`{failed_command}`\n- **处理**：已记录服务端日志，请稍后重试。"
                 return ""  # 插件自行处理回复
 
         # 检查是否为已注册的扩展指令（旧机制）

@@ -41,6 +41,7 @@ from webhook_manager import discover_and_register_plugins
 logger = logging.getLogger(__name__)
 
 DATA_BASE = os.environ.get("DATA_DIR", "./data")
+VISIBLE_CONTACT_LIMIT = 1
 
 MSG_TYPE_MAP = {
     1: "文本",
@@ -72,7 +73,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self._last_pending_cleanup_at = 0
         self.ai_manager = None
         self._consecutive_send_count: dict[str, dict] = {}
-        self._webhook_commands: dict[str, str] = {}  # 外部服务注册的命令 {"/rj": "开始日记录入"}
+        self._webhook_commands: dict[str, str] = {}  # 外部服务注册的命令 {"/todo": "记录待办"}
         self._mute_until: dict[str, float] = {}  # 用户静默截止时间 {user_id: timestamp}
         self._outbound_lock = threading.Lock()
         self._contacts_lock = threading.Lock()
@@ -190,6 +191,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         indexed_items = list(enumerate(self.contacts.items()))
         indexed_items.sort(key=lambda item: (-latest_times.get(item[1][0], 0), item[0]))
         return dict(contact for _, contact in indexed_items)
+
+    def get_visible_contacts(self) -> dict[str, str]:
+        """默认只展示最近一个联系人，历史联系人继续保留用于精确发送。"""
+        ordered = self.get_ordered_contacts()
+        return dict(list(ordered.items())[:VISIBLE_CONTACT_LIMIT])
 
     def get_default_contact(self) -> str:
         """返回默认联系人 user_id，按最近入站优先。"""
@@ -552,7 +558,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         # 非命令消息触发旧 Webhook（兼容）
         self._trigger_webhook(from_user, from_name, text, msg)
 
-        # 插件持有该用户会话时（如日记录入中），跳过 AI
+        # 插件持有该用户会话时（如便签收集中），跳过 AI
         if self.plugin_registry.find_session_holder(from_user):
             logger.debug("插件持有用户 [%s] 会话，跳过 AI", from_user[:16])
             return

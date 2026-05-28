@@ -160,6 +160,61 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(self.bridge.get_default_contact(), "uid-new")
         self.assertEqual(self.bridge.find_user_id("uid-new"), "uid-new")
 
+    def test_visible_contacts_only_include_latest_contact(self):
+        self.bridge.contacts = {
+            "uid-old": "Old",
+            "uid-new": "New",
+            "uid-empty": "Empty",
+        }
+        self.bridge.activity_tracker = {
+            "uid-old": {"last_receive_time": 100, "reminded": False},
+            "uid-new": {"last_receive_time": 200, "reminded": False},
+        }
+
+        visible = self.bridge.get_visible_contacts()
+
+        self.assertEqual(visible, {"uid-new": "New"})
+        self.assertEqual(set(self.bridge.contacts), {"uid-old", "uid-new", "uid-empty"})
+        self.assertEqual(self.bridge.find_user_id("uid-old"), "uid-old")
+
+    def test_visible_delivery_status_ignores_hidden_history(self):
+        self.bridge.contacts = {
+            "uid-new": "New",
+            "uid-old": "Old",
+        }
+        self.bridge.activity_tracker = {
+            "uid-new": {"last_receive_time": 200, "reminded": False},
+            "uid-old": {"last_receive_time": 100, "reminded": False},
+        }
+        session = db.create_overflow_session("ofs-old", "uid-old", "window_24h")
+        db.create_pending_message(
+            session_id=session["id"],
+            user_id="uid-old",
+            source="api",
+            title="",
+            content="old pending",
+            blocked_reason="window_24h",
+        )
+        self.bridge._set_delivery_state(
+            "uid-old",
+            status="BUFFERING",
+            blocked_reason="window_24h",
+            active_overflow_session_id=session["id"],
+        )
+
+        summaries = self.bridge.get_visible_contact_delivery_summaries()
+        status = self.bridge.get_runtime_status()
+
+        self.assertEqual(set(summaries.keys()), {"uid-new"})
+        self.assertEqual(status["contacts_count"], 1)
+        self.assertEqual(status["contacts_total"], 2)
+        self.assertEqual(status["pending_total"], 0)
+        self.assertEqual(status["active_sessions"], 0)
+        self.assertEqual(status["buffering_users"], 0)
+        self.assertEqual(status["all_pending_total"], 1)
+        self.assertEqual(status["all_active_sessions"], 1)
+        self.assertEqual(status["all_buffering_users"], 1)
+
     def test_contact_order_ignores_newer_outbound_messages(self):
         self.bridge.contacts = {
             "uid-inbound": "Inbound",

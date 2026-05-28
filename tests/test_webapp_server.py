@@ -17,6 +17,8 @@ if str(APP_ROOT) not in sys.path:
 install_crypto_stub()
 sys.modules.setdefault("qrcode", types.ModuleType("qrcode"))
 import config as cfg
+import webapp.api_handlers as api_handlers
+import webapp.server as server_mod
 from webapp.api_handlers import handle_qr_status
 from webapp.context import WebAppContext
 from webapp.server import BridgeHandler, ThreadingHTTPServer
@@ -51,6 +53,7 @@ class _FakeBridge:
         self.ai_manager = None
         self.recent_messages = ["stale-message"]
         self._consecutive_send_count = {"uid-1": {"count": 1}}
+        self.delivery_summaries = {}
         self.setup_data_dir_called = False
         self.load_contacts_called = False
 
@@ -71,15 +74,29 @@ class _FakeBridge:
 
     def get_contact_delivery_summaries(self):
         return {
-            "uid-1": {
-                "user_id": "uid-1",
-                "contact": "Alice",
-                "status": "NORMAL",
-                "blocked_reason_text": "无",
-                "pending_count": 0,
-                "active_overflow_session_id": None,
-            }
+            uid: self.delivery_summaries.get(
+                uid,
+                {
+                    "user_id": uid,
+                    "contact": name,
+                    "status": "NORMAL",
+                    "blocked_reason_text": "无",
+                    "pending_count": 0,
+                    "active_overflow_session_id": None,
+                },
+            )
+            for uid, name in self.contacts.items()
         }
+
+    def get_visible_contact_delivery_summaries(self):
+        return {
+            uid: summary
+            for uid, summary in self.get_contact_delivery_summaries().items()
+            if uid in self.get_visible_contacts()
+        }
+
+    def get_visible_contacts(self):
+        return dict(list(self.get_ordered_contacts().items())[:1])
 
     def get_ordered_contacts(self):
         return self.contacts
@@ -313,12 +330,64 @@ class WebAppServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         cookie = headers.get("Set-Cookie")
         self.assertIsNotNone(cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
 
         status, _, body = self._request("/api/web_check", headers={"Cookie": cookie})
         self.assertEqual(status, 200)
         data = json.loads(body)
         self.assertTrue(data["authed"])
         self.assertTrue(data["need_auth"])
+
+    def test_internal_post_error_returns_generic_message(self):
+        original_routes = dict(server_mod.POST_API_ROUTES)
+
+        def _raise(handler, ctx, params, body):
+            raise RuntimeError("private internal detail")
+
+        try:
+            server_mod.POST_API_ROUTES["/api/bomb"] = _raise
+            status, _, body = self._request(
+                "/api/bomb",
+                method="POST",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+        finally:
+            server_mod.POST_API_ROUTES.clear()
+            server_mod.POST_API_ROUTES.update(original_routes)
+
+        self.assertEqual(status, 500)
+        self.assertIn("Internal server error", body)
+        self.assertNotIn("private internal detail", body)
+
+    def test_internal_get_error_returns_generic_message(self):
+        original_routes = dict(server_mod.GET_API_ROUTES)
+
+        def _raise(handler, ctx, params):
+            raise RuntimeError("private get detail")
+
+        try:
+            server_mod.GET_API_ROUTES["/api/bomb"] = _raise
+            status, _, body = self._request("/api/bomb")
+        finally:
+            server_mod.GET_API_ROUTES.clear()
+            server_mod.GET_API_ROUTES.update(original_routes)
+
+        self.assertEqual(status, 500)
+        self.assertIn("Internal server error", body)
+        self.assertNotIn("private get detail", body)
+
+    def test_weather_module_loader_finds_repo_examples_dir(self):
+        previous_module = api_handlers._weather_module
+        api_handlers._weather_module = None
+        try:
+            module = api_handlers._load_weather_module()
+        finally:
+            api_handlers._weather_module = previous_module
+
+        self.assertTrue(hasattr(module, "build_weather_snapshot"))
+        self.assertEqual(module.DEFAULT_WEATHER_CITY, "紫金")
 
     def test_api_status_returns_service_state(self):
         status, _, body = self._request("/api/status")
@@ -328,6 +397,46 @@ class WebAppServerTests(unittest.TestCase):
         self.assertEqual(data["bot_id"], "bot-test")
         self.assertEqual(data["contacts_count"], 1)
         self.assertIn("version", data)
+
+    def test_api_contacts_returns_only_visible_contact_by_default(self):
+        self.bridge.contacts = {"uid-new": "New", "uid-old": "Old"}
+        self.bridge.context_tokens = {"uid-new": "ctx-new", "uid-old": "ctx-old"}
+        self.bridge.delivery_summaries = {
+            "uid-old": {
+                "user_id": "uid-old",
+                "contact": "Old",
+                "status": "BUFFERING",
+                "blocked_reason_text": "24h 窗口失效",
+                "pending_count": 1,
+                "active_overflow_session_id": "ofs-old",
+            }
+        }
+
+        status, _, body = self._request(
+            "/api/contacts",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["contacts"], {"uid-new": "New"})
+        self.assertEqual(data["context_tokens"], {"uid-new": "ctx-new..."})
+        self.assertEqual(set(data["delivery_states"].keys()), {"uid-new"})
+        self.assertEqual(data["contacts_total"], 2)
+
+    def test_api_contacts_can_include_history_for_diagnostics(self):
+        self.bridge.contacts = {"uid-new": "New", "uid-old": "Old"}
+        self.bridge.context_tokens = {"uid-new": "ctx-new", "uid-old": "ctx-old"}
+
+        status, _, body = self._request(
+            "/api/contacts?include_history=1",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["contacts"], {"uid-new": "New", "uid-old": "Old"})
+        self.assertEqual(set(data["context_tokens"].keys()), {"uid-new", "uid-old"})
 
     def test_api_send_requires_api_token(self):
         payload = json.dumps({"to": "Alice", "text": "hello"}).encode("utf-8")
