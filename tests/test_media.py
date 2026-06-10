@@ -61,6 +61,56 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(saved.read_bytes(), plaintext)
         self.assertEqual(saved.suffix, ".jpg")
 
+    def test_encrypt_aes_ecb_file_matches_bytes_encryption(self):
+        key = b"0123456789abcdef"
+        src = Path(self.tempdir.name) / "plain.bin"
+        dst = Path(self.tempdir.name) / "encrypted.bin"
+        plaintext = b"hello-wechat-bridge" * 100
+        src.write_bytes(plaintext)
+
+        written = media.encrypt_aes_ecb_file(str(src), str(dst), key, chunk_size=17)
+
+        self.assertEqual(written, media.encrypted_size_for_plain_size(len(plaintext)))
+        self.assertEqual(dst.read_bytes(), media.encrypt_aes_ecb(plaintext, key))
+
+    def test_inspect_media_file_returns_md5_and_sizes(self):
+        src = Path(self.tempdir.name) / "plain.bin"
+        src.write_bytes(b"abc" * 500)
+
+        result = media.inspect_media_file(str(src), chunk_size=64)
+
+        self.assertEqual(result["rawsize"], 1500)
+        self.assertEqual(result["first1024"], (b"abc" * 500)[:1024])
+        self.assertEqual(result["encrypted_size"], media.encrypted_size_for_plain_size(1500))
+
+    def test_detect_media_format_recognizes_silk_v3(self):
+        silk_bytes = b"\x02#!SILK_V3.\x00" + b"\x00" * 64
+
+        self.assertTrue(media.is_silk(silk_bytes))
+        self.assertEqual(media._detect_media_format(silk_bytes, media_type="voice"), "silk")
+
+    def test_cleanup_expired_media_files_deletes_matching_prefix_only(self):
+        old_video = Path(self.tempdir.name) / "out_video_old.mp4"
+        fresh_video = Path(self.tempdir.name) / "out_video_fresh.mp4"
+        old_image = Path(self.tempdir.name) / "out_img_old.jpg"
+        old_video.write_bytes(b"old")
+        fresh_video.write_bytes(b"fresh")
+        old_image.write_bytes(b"image")
+        now_ts = 1710000000
+        old_ts = now_ts - 8 * 24 * 3600
+        for path, ts in ((old_video, old_ts), (fresh_video, now_ts), (old_image, old_ts)):
+            path.touch()
+            import os
+
+            os.utime(path, (ts, ts))
+
+        result = media.cleanup_expired_media_files(self.tempdir.name, retention_hours=168, now_ts=now_ts)
+
+        self.assertEqual(result["deleted"], 1)
+        self.assertFalse(old_video.exists())
+        self.assertTrue(fresh_video.exists())
+        self.assertTrue(old_image.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

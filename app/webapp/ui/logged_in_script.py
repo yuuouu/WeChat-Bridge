@@ -13,7 +13,7 @@ LOGGED_IN_JS = r"""
     };
     let aiEnabled = false;
     let webhookEnabled = false;
-    let telemetryEnabled = false;
+    let telemetryEnabled = true;
     let keepaliveMinutes = 0;
     let currentBotId = localStorage.getItem('currentBotId') || '';
     let accounts = [];
@@ -544,8 +544,9 @@ UID: ${account.ilink_user_id || '—'}`;
       }
       const pending = entry.summary ? (entry.summary.pending_count || 0) : 0;
       const status = entry.summary ? deliveryStatusLabel(entry.summary.status) : '正常';
+      const consecutive = entry.summary ? (entry.summary.consecutive_send_count || 0) : 0;
       currentContactNameEl.textContent = entry.name;
-      currentContactMetaEl.textContent = pending > 0 ? `${status} · ${pending} 条暂存` : status;
+      currentContactMetaEl.textContent = pending > 0 ? `${status} · 连发 ${consecutive}/10 · ${pending} 条暂存` : `${status} · 连发 ${consecutive}/10`;
     }
 
     function selectContact(userId) {
@@ -691,6 +692,10 @@ UID: ${account.ilink_user_id || '—'}`;
       const div = document.createElement('div');
       div.className = `msg ${m.type}`;
       let bubbleContent = m.text.replace(/</g, '&lt;');
+      bubbleContent = bubbleContent.replace(
+        /^\[引用:([^\]]+)\]\n?/,
+        '<div class="quote-block"><span>引用</span>$1</div>'
+      );
       const tags = [];
       if (m.delivery_stage === 'buffered') tags.push('<span class="msg-tag buffered">已缓存</span>');
       if (m.delivery_stage === 'pulled') tags.push('<span class="msg-tag pulled">已补拉</span>');
@@ -703,15 +708,29 @@ UID: ${account.ilink_user_id || '—'}`;
       if (m.media) {
         const mediaUrl = apiUrl('/media/' + encodeURIComponent(m.media));
         const isVideo = /\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media);
+        const isAudio = /\.(silk|amr|wav|mp3|m4a|aac|ogg|oga|flac)$/i.test(m.media);
+        const isImage = /\.(jpg|jpeg|png|gif|webp|bmp|avif)$/i.test(m.media);
+        const escapedMediaName = m.media.replace(/"/g, '&quot;');
         if (isVideo) {
           bubbleContent = bubbleContent.replace(
             /\[视频:[^\]]*\]/g,
             `<video class="chat-video" src="${mediaUrl}" controls preload="metadata" playsinline></video>`
           );
-        } else {
+        } else if (isAudio) {
+          const audioLabel = /\.silk$/i.test(m.media) ? '<div class="media-hint">SILK 语音已发送，浏览器可能无法直接播放</div>' : '';
+          bubbleContent = bubbleContent.replace(
+            /\[语音:[^\]]*\]/g,
+            `<audio class="chat-audio" src="${mediaUrl}" controls preload="metadata"></audio>${audioLabel}`
+          );
+        } else if (isImage) {
           bubbleContent = bubbleContent.replace(
             /\[图片:[^\]]*\]/g,
             `<img class="chat-img" src="${mediaUrl}" alt="图片" onclick="openLightbox('${mediaUrl}')" loading="lazy">`
+          );
+        } else {
+          bubbleContent = bubbleContent.replace(
+            /\[文件:([^\]]+)\]/g,
+            `<a class="chat-file" href="${mediaUrl}" download="${escapedMediaName}"><span>附件</span><strong>$1</strong></a>`
           );
         }
       }
@@ -798,6 +817,7 @@ UID: ${account.ilink_user_id || '—'}`;
       const summary = resolveCurrentDeliverySummary();
       const statusLabel = deliveryStatusLabel(summary ? summary.status : 'NORMAL');
       document.getElementById('currentDeliveryStatus').textContent = statusLabel;
+      document.getElementById('currentConsecutiveCount').textContent = summary ? `${summary.consecutive_send_count || 0}/10` : '0/10';
       document.getElementById('currentBlockedReason').textContent = summary ? (summary.blocked_reason_text || '无') : '无';
       document.getElementById('currentPendingCount').textContent = summary ? `${summary.pending_count || 0} 条` : '0 条';
       document.getElementById('currentSessionId').textContent = summary && summary.active_overflow_session_id ? summary.active_overflow_session_id.slice(0, 12) : '-';
@@ -900,7 +920,9 @@ UID: ${account.ilink_user_id || '—'}`;
                 let notifyText = m.text;
                 if (m.media) {
                     if (/\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media)) notifyText = "[视频]";
-                    else notifyText = "[图片]";
+                    else if (/\.(silk|amr|wav|mp3|m4a|aac|ogg|oga|flac)$/i.test(m.media)) notifyText = "[语音]";
+                    else if (/\.(jpg|jpeg|png|gif|webp|bmp|avif)$/i.test(m.media)) notifyText = "[图片]";
+                    else notifyText = "[文件]";
                 }
                 new Notification('WeChat Bridge - ' + m.contact, { body: notifyText, icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💬</text></svg>" });
             }
@@ -1002,28 +1024,44 @@ UID: ${account.ilink_user_id || '—'}`;
       } catch (e) {}
     }
 
-    const imgUpload = document.getElementById('imgUpload');
-    imgUpload.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-
+    async function sendMediaFile(file) {
       const to = contactIpt.value.trim();
       if (!to) {
         showToast('请先选择当前联系人', 'error');
-        imgUpload.value = ''; // 清除选择，以便可重复选同一张图
         return;
+      }
+
+      let endpoint = '/api/send_image';
+      let fieldName = 'image';
+      let label = '图片';
+      const lowerName = (file.name || '').toLowerCase();
+      if (file.type.startsWith('image/')) {
+        endpoint = '/api/send_image';
+        fieldName = 'image';
+        label = '图片';
+      } else if (file.type.startsWith('video/') || /\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(lowerName)) {
+        endpoint = '/api/send_video';
+        fieldName = 'video';
+        label = '视频';
+      } else if (file.type.startsWith('audio/') || /\.(silk)$/i.test(lowerName)) {
+        endpoint = '/api/send_voice';
+        fieldName = 'voice';
+        label = '语音';
+      } else {
+        endpoint = '/api/send_file';
+        fieldName = 'file';
+        label = '文件';
       }
 
       const formData = new FormData();
       formData.append('to', to);
-      formData.append('image', file);
+      formData.append(fieldName, file);
       formData.append('bot_id', currentBotId);
 
-      // 显示上传中的状态，用 toast
-      showToast('图片上传发送中...');
+      showToast(`${label}上传发送中...`);
 
       try {
-        const res = await fetch(apiUrl('/api/send_image'), {
+        const res = await fetch(apiUrl(endpoint), {
           method: 'POST',
           body: formData
         });
@@ -1031,19 +1069,31 @@ UID: ${account.ilink_user_id || '—'}`;
         const data = await res.json();
         if (res.ok) {
           if (data.buffered) {
-            showToast(data.message || '图片已进入缓存队列');
+            showToast(data.message || `${label}已进入缓存队列`);
           } else {
-            showToast('图片发送成功！手机端可查看');
+            showToast(`${label}发送成功！手机端可查看`);
           }
           await fetchMsgs(); // 立即刷新查看消息
           msgsEl.scrollTo({ top: msgsEl.scrollHeight, behavior: 'smooth' });
         } else {
-          showToast('图片发送失败: ' + data.error, 'error');
+          if (data.blocked) {
+            showToast(data.error || `${label}受限，请等用户回复后重试`, 'error');
+          } else {
+            showToast(`${label}发送失败: ` + data.error, 'error');
+          }
         }
       } catch(error) {
         showToast('网络错误', 'error');
       }
-      imgUpload.value = ''; // 重置 file input
+    }
+
+    const mediaUpload = document.getElementById('mediaUpload');
+    mediaUpload.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        await sendMediaFile(file);
+      }
+      mediaUpload.value = ''; // 重置 file input
     });
 
     sendBtn.addEventListener('click', sendMsg);

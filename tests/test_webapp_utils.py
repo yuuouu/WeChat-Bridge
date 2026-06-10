@@ -80,6 +80,23 @@ class WebAppUtilsTests(unittest.TestCase):
         self.assertEqual(to, "Alice")
         self.assertEqual(image_data, b"PNGDATA123")
 
+    def test_parse_multipart_extracts_video_and_voice_fields(self):
+        for field_name, expected in (("video", b"MP4DATA"), ("voice", b"AMRDATA")):
+            boundary = f"----boundary-{field_name}"
+            body = (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="to"\r\n\r\n'
+                "Alice\r\n"
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{field_name}"; filename="a.bin"\r\n'
+                "Content-Type: application/octet-stream\r\n\r\n"
+            ).encode() + expected + f"\r\n--{boundary}--\r\n".encode()
+
+            to, media_data = parse_multipart(body, f"multipart/form-data; boundary={boundary}")
+
+            self.assertEqual(to, "Alice")
+            self.assertEqual(media_data, expected)
+
     def test_parse_webhook_payload_handles_github_push(self):
         payload = {
             "repository": {"full_name": "demo/repo"},

@@ -26,6 +26,13 @@ class _FakeClient:
         self.bot_id = "bot-test"
         self.sent_texts = []
         self.sent_images = []
+        self.sent_videos = []
+        self.sent_video_paths = []
+        self.sent_voices = []
+        self.sent_files = []
+        self.sent_references = []
+        self.file_error = None
+        self.reference_error = None
 
     def get_bot_id(self):
         return self.bot_id
@@ -40,6 +47,31 @@ class _FakeClient:
     def send_image(self, to_user_id: str, file_data: bytes, context_token: str = "") -> dict:
         self.sent_images.append((to_user_id, len(file_data), context_token))
         return {"to_user_id": to_user_id, "size": len(file_data)}
+
+    def send_video(self, to_user_id: str, file_data: bytes, context_token: str = "", play_length: int = 0) -> dict:
+        self.sent_videos.append((to_user_id, len(file_data), context_token, play_length))
+        return {"to_user_id": to_user_id, "size": len(file_data), "play_length": play_length}
+
+    def send_video_path(self, to_user_id: str, filepath: str, context_token: str = "", play_length: int = 0) -> dict:
+        size = os.path.getsize(filepath)
+        self.sent_video_paths.append((to_user_id, filepath, size, context_token, play_length))
+        return {"to_user_id": to_user_id, "size": size, "play_length": play_length}
+
+    def send_voice(self, to_user_id: str, file_data: bytes, context_token: str = "", playtime_ms: int = 0, text: str = "") -> dict:
+        self.sent_voices.append((to_user_id, len(file_data), context_token, playtime_ms, text))
+        return {"to_user_id": to_user_id, "size": len(file_data), "playtime_ms": playtime_ms}
+
+    def send_file(self, to_user_id: str, file_data: bytes, context_token: str = "", file_name: str = "file.bin", text: str = "") -> dict:
+        if self.file_error:
+            raise self.file_error
+        self.sent_files.append((to_user_id, len(file_data), context_token, file_name, text))
+        return {"to_user_id": to_user_id, "size": len(file_data), "file_name": file_name}
+
+    def send_reference_text(self, to_user_id: str, text: str, context_token: str = "", ref_text: str = "", ref_title: str = "") -> dict:
+        if self.reference_error:
+            raise self.reference_error
+        self.sent_references.append((to_user_id, text, context_token, ref_text, ref_title))
+        return {"to_user_id": to_user_id, "text": text, "native_reference": False, "fallback": "text_quote"}
 
 
 class BridgeDeliveryTests(unittest.TestCase):
@@ -655,6 +687,188 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(len(img_records), 1)
         self.assertIn("[图片:", img_records[0]["text"])
         self.assertEqual(img_records[0]["delivery_stage"], "direct")
+
+    def test_send_video_success_records_media_in_message_history(self):
+        video_bytes = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048
+        result = self.bridge.send_video("Alice", video_bytes, play_length=12)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(self.client.sent_videos), 1)
+        sent_uid, sent_size, sent_context, sent_length = self.client.sent_videos[0]
+        self.assertEqual(sent_uid, "uid-1")
+        self.assertEqual(sent_size, len(video_bytes))
+        self.assertEqual(sent_context, "ctx-1")
+        self.assertEqual(sent_length, 12)
+
+        messages = db.get_messages(limit=10)
+        video_records = [m for m in messages if m["type"] == "send" and m["media"]]
+        self.assertEqual(len(video_records), 1)
+        self.assertIn("[视频:", video_records[0]["text"])
+        self.assertEqual(video_records[0]["delivery_stage"], "direct")
+
+    def test_send_video_path_moves_file_and_records_media(self):
+        source_path = Path(self.tempdir.name) / "source.mp4"
+        source_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048)
+
+        result = self.bridge.send_video_path("Alice", str(source_path), play_length=8)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(source_path.exists())
+        self.assertEqual(len(self.client.sent_video_paths), 1)
+        sent_uid, sent_path, sent_size, sent_context, sent_length = self.client.sent_video_paths[0]
+        self.assertEqual(sent_uid, "uid-1")
+        self.assertEqual(sent_size, 2060)
+        self.assertEqual(sent_context, "ctx-1")
+        self.assertEqual(sent_length, 8)
+        self.assertTrue(Path(sent_path).exists())
+
+        messages = db.get_messages(limit=10)
+        video_records = [m for m in messages if m["type"] == "send" and m["media"]]
+        self.assertEqual(len(video_records), 1)
+        self.assertTrue(video_records[0]["media"].startswith("out_video_"))
+
+    def test_send_voice_success_records_media_in_message_history(self):
+        voice_bytes = b"\x02#!SILK_V3.\x00" + b"\x00" * 128
+        result = self.bridge.send_voice("Alice", voice_bytes, playtime_ms=1000)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(self.client.sent_voices), 1)
+        sent_uid, sent_size, sent_context, sent_playtime, sent_text = self.client.sent_voices[0]
+        self.assertEqual(sent_uid, "uid-1")
+        self.assertEqual(sent_size, len(voice_bytes))
+        self.assertEqual(sent_context, "ctx-1")
+        self.assertEqual(sent_playtime, 1000)
+        self.assertEqual(sent_text, "")
+
+        messages = db.get_messages(limit=10)
+        voice_records = [m for m in messages if m["type"] == "send" and m["media"]]
+        self.assertEqual(len(voice_records), 1)
+        self.assertIn("[语音:", voice_records[0]["text"])
+        self.assertTrue(voice_records[0]["media"].startswith("out_voice_"))
+        self.assertTrue(voice_records[0]["media"].endswith(".silk"))
+
+    def test_send_voice_rejects_non_silk_audio(self):
+        voice_bytes = b"#!AMR\n" + b"\x00" * 128
+
+        result = self.bridge.send_voice("Alice", voice_bytes, playtime_ms=1000)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("SILK", result["error"])
+        self.assertEqual(self.client.sent_voices, [])
+
+    def test_send_file_success_records_media_in_message_history(self):
+        file_bytes = b"hello file"
+
+        result = self.bridge.send_file("Alice", file_bytes, file_name="report.txt", text="附件说明")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.client.sent_files, [("uid-1", len(file_bytes), "ctx-1", "report.txt", "附件说明")])
+        self.assertEqual(self.bridge.get_delivery_summary("uid-1")["consecutive_send_count"], 1)
+        messages = db.get_messages(limit=10)
+        file_records = [m for m in messages if m["type"] == "send" and m["media"]]
+        self.assertEqual(len(file_records), 1)
+        self.assertIn("[文件:report.txt]", file_records[0]["text"])
+        self.assertTrue(file_records[0]["media"].startswith("out_file_"))
+
+    def test_send_file_after_quota_is_blocked_without_pending_attachment(self):
+        for idx in range(10):
+            self.bridge.send("Alice", f"hello-{idx}")
+
+        result = self.bridge.send_file("Alice", b"hello file", file_name="report.txt")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"])
+        self.assertEqual(result["blocked_reason"], "quota_10")
+        self.assertEqual(self.client.sent_files, [])
+        summary = self.bridge.get_delivery_summary("uid-1")
+        self.assertEqual(summary["status"], "BUFFERING")
+        self.assertEqual(summary["pending_count"], 0)
+
+    def test_send_file_ret_minus_two_marks_api_limit_without_pending_attachment(self):
+        self.client.file_error = RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时")
+
+        result = self.bridge.send_file("Alice", b"hello file", file_name="report.txt")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"])
+        self.assertEqual(result["blocked_reason"], "api_limit")
+        self.assertEqual(result["retry_after_user_reply"], True)
+        summary = self.bridge.get_delivery_summary("uid-1")
+        self.assertEqual(summary["status"], "BUFFERING")
+        self.assertEqual(summary["blocked_reason"], "api_limit")
+        self.assertEqual(summary["pending_count"], 0)
+
+    def test_send_file_when_already_buffering_does_not_save_or_upload(self):
+        self.bridge._set_delivery_state("uid-1", status="BUFFERING", blocked_reason="api_limit")
+
+        result = self.bridge.send_file("Alice", b"hello file", file_name="report.txt")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"])
+        self.assertEqual(result["blocked_reason"], "api_limit")
+        self.assertNotIn("media", result)
+        self.assertEqual(self.client.sent_files, [])
+        self.assertEqual(list(Path(self.bridge._media_dir).glob("out_file_*")), [])
+
+    def test_send_reference_text_records_reference_message(self):
+        result = self.bridge.send_reference_text("Alice", "这是回复", ref_title="原消息", ref_text="被引用内容")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["native_reference"])
+        self.assertEqual(result["fallback"], "text_quote")
+        self.assertEqual(self.client.sent_texts, [("uid-1", "[引用:原消息 | 被引用内容]\n这是回复", "ctx-1")])
+        self.assertEqual(self.client.sent_references, [])
+        self.assertEqual(self.bridge.get_delivery_summary("uid-1")["consecutive_send_count"], 1)
+        messages = db.get_messages(limit=10)
+        ref_records = [m for m in messages if m["type"] == "send" and m["text"].startswith("[引用:")]
+        self.assertEqual(len(ref_records), 1)
+        self.assertEqual(ref_records[0]["text"], "[引用:原消息 | 被引用内容]\n这是回复")
+        self.assertIn("这是回复", ref_records[0]["text"])
+        self.assertEqual(ref_records[0]["meta"]["native_reference"], False)
+        self.assertEqual(ref_records[0]["meta"]["fallback"], "text_quote")
+
+    def test_send_reference_ret_minus_two_marks_api_limit(self):
+        def _raise_limit(to_user_id: str, text: str, context_token: str = "") -> dict:
+            raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时")
+
+        self.client.send_text = _raise_limit
+
+        result = self.bridge.send_reference_text("Alice", "这是回复", ref_title="原消息", ref_text="被引用内容")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["buffered"])
+        self.assertFalse(result["native_reference"])
+        self.assertEqual(result["fallback"], "text_quote")
+        self.assertEqual(result["blocked_reason"], "api_limit")
+        self.assertEqual(self.client.sent_references, [])
+        summary = self.bridge.get_delivery_summary("uid-1")
+        self.assertEqual(summary["status"], "BUFFERING")
+        self.assertEqual(summary["blocked_reason"], "api_limit")
+        messages = db.get_messages(limit=10)
+        buffered = [m for m in messages if m["delivery_stage"] == "buffered" and m["text"].startswith("[引用:")]
+        self.assertEqual(len(buffered), 1)
+        self.assertEqual(buffered[0]["meta"]["native_reference"], False)
+        self.assertEqual(buffered[0]["meta"]["fallback"], "text_quote")
+
+    def test_cleanup_expired_media_files_deletes_old_outbound_videos_only(self):
+        media_dir = Path(self.bridge._media_dir)
+        old_video = media_dir / "out_video_old.mp4"
+        fresh_video = media_dir / "out_video_fresh.mp4"
+        old_image = media_dir / "out_img_old.jpg"
+        old_video.write_bytes(b"old")
+        fresh_video.write_bytes(b"fresh")
+        old_image.write_bytes(b"image")
+        now_ts = int(time.time())
+        os.utime(old_video, (now_ts - 8 * 24 * 3600, now_ts - 8 * 24 * 3600))
+        os.utime(fresh_video, (now_ts, now_ts))
+        os.utime(old_image, (now_ts - 8 * 24 * 3600, now_ts - 8 * 24 * 3600))
+
+        result = self.bridge.cleanup_expired_media_files(now_ts=now_ts, force=True)
+
+        self.assertEqual(result["deleted"], 1)
+        self.assertFalse(old_video.exists())
+        self.assertTrue(fresh_video.exists())
+        self.assertTrue(old_image.exists())
 
     def test_tenth_image_creates_overflow_session_without_appending_text(self):
         """第 10 张图片：建立 overflow session，但不向图片字节拼接告警文字。"""

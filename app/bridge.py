@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 
 import requests
 
@@ -34,7 +36,7 @@ from event_bus import (
     Event,
     EventBus,
 )
-from ilink import ILinkClient
+from ilink import ILinkClient, format_reference_fallback_text
 from keepalive import KeepaliveMixin
 from plugin_base import PluginRegistry
 from webhook_manager import discover_and_register_plugins
@@ -43,6 +45,17 @@ logger = logging.getLogger(__name__)
 
 DATA_BASE = os.environ.get("DATA_DIR", "./data")
 VISIBLE_CONTACT_LIMIT = 1
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+VIDEO_MEDIA_RETENTION_HOURS = _env_int("VIDEO_MEDIA_RETENTION_HOURS", 168)
+VIDEO_MEDIA_CLEANUP_INTERVAL_SECONDS = _env_int("VIDEO_MEDIA_CLEANUP_INTERVAL_SECONDS", 3600)
 
 MSG_TYPE_MAP = {
     1: "文本",
@@ -72,6 +85,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self._poll_thread: threading.Thread | None = None
         self._pending_cleanup_thread: threading.Thread | None = None
         self._last_pending_cleanup_at = 0
+        self._last_media_cleanup_at = 0
         self.ai_manager = None
         self._consecutive_send_count: dict[str, dict] = {}
         self._webhook_commands: dict[str, str] = {}  # 外部服务注册的命令 {"/todo": "记录待办"}
@@ -84,7 +98,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         self._load_contacts()
 
         self.event_bus = EventBus()
-        self.plugin_registry = PluginRegistry(self.event_bus, send_func=self.send)
+        self.plugin_registry = PluginRegistry(self.event_bus, send_func=self.send, bridge=self)
         discover_and_register_plugins(self.plugin_registry)
         self.plugin_registry.start_all()
 
@@ -330,6 +344,263 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         with open(save_path, "wb") as fh:
             fh.write(file_data)
         return filename
+
+    def _save_outbound_video(self, file_data: bytes) -> str:
+        media._ensure_media_dir(self._media_dir)
+        filename = f"out_video_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp4"
+        save_path = os.path.join(self._media_dir, filename)
+        with open(save_path, "wb") as fh:
+            fh.write(file_data)
+        return filename
+
+    def _save_outbound_voice(self, file_data: bytes) -> str:
+        media._ensure_media_dir(self._media_dir)
+        ext = media._detect_media_format(file_data, media_type="voice")
+        filename = f"out_voice_{int(time.time())}_{uuid.uuid4().hex[:8]}.{ext}"
+        save_path = os.path.join(self._media_dir, filename)
+        with open(save_path, "wb") as fh:
+            fh.write(file_data)
+        return filename
+
+    def _save_outbound_file(self, file_data: bytes, file_name: str = "") -> str:
+        media._ensure_media_dir(self._media_dir)
+        base_name = os.path.basename(file_name or "file.bin").strip() or "file.bin"
+        safe_name = "".join("_" if ch in '/\\\x00' or ord(ch) < 32 else ch for ch in base_name)[:120]
+        filename = f"out_file_{int(time.time())}_{uuid.uuid4().hex[:8]}_{safe_name or 'file.bin'}"
+        save_path = os.path.join(self._media_dir, filename)
+        with open(save_path, "wb") as fh:
+            fh.write(file_data)
+        return filename
+
+    def _blocked_non_replayable_send(
+        self,
+        *,
+        user_id: str,
+        reason: str,
+        media_label: str,
+        media_name: str | None = None,
+        active_session_id: str | None = None,
+    ) -> dict:
+        """标记非文本类消息受限。
+
+        这些消息当前不能通过 /pull 原样重放，不能写入 pending 队列假装可补拉。
+        """
+        self._set_delivery_state(
+            user_id,
+            status="BUFFERING",
+            blocked_reason=reason,
+            active_overflow_session_id=active_session_id,
+        )
+        if reason == "muted":
+            message = f"{media_label}未发送：当前处于静默模式，恢复后请重试。"
+        else:
+            reason_text = self._blocked_reason_text(reason)
+            message = f"{media_label}未发送：当前联系人发送受限（{reason_text}），该类型暂不能进入 /pull 缓存，请等用户回复后重试。"
+        result = {
+            "ok": False,
+            "blocked": True,
+            "blocked_reason": reason,
+            "retry_after_user_reply": reason != "muted",
+            "error": message,
+        }
+        if media_name:
+            result["media"] = media_name
+        return result
+
+    def _send_non_replayable_resolved(
+        self,
+        *,
+        user_id: str,
+        contact_name: str,
+        record_text: str | Callable[[], str],
+        context_token: str,
+        source: str,
+        media_label: str,
+        send_action,
+        media_name_getter=None,
+        title: str = "",
+        extra_meta: dict | None = None,
+    ) -> dict:
+        """发送无法通过 /pull 原样重放的结构化消息。"""
+        with self._outbound_lock:
+            now_ts = int(time.time())
+            state = self._get_delivery_state(user_id)
+            active_session_id = state.get("active_overflow_session_id")
+            current_status = state.get("status", "NORMAL")
+            current_reason = state.get("blocked_reason")
+
+            if current_status in ("BUFFERING", "WARNED") and current_reason in (
+                "quota_10",
+                "window_24h",
+                "api_limit",
+            ):
+                return self._blocked_non_replayable_send(
+                    user_id=user_id,
+                    reason=current_reason,
+                    media_label=media_label,
+                    active_session_id=active_session_id,
+                )
+
+            mute_ts = self._mute_until.get(user_id, 0)
+            if mute_ts and now_ts < mute_ts and source not in ("keepalive", "command", "system"):
+                return self._blocked_non_replayable_send(
+                    user_id=user_id,
+                    reason="muted",
+                    media_label=media_label,
+                    active_session_id=active_session_id,
+                )
+
+            if self._is_window_expired(user_id, state, now_ts):
+                return self._blocked_non_replayable_send(
+                    user_id=user_id,
+                    reason="window_24h",
+                    media_label=media_label,
+                    active_session_id=active_session_id,
+                )
+
+            current_count = int(state.get("consecutive_send_count") or 0)
+            if current_count >= MAX_CONSECUTIVE_SENDS:
+                return self._blocked_non_replayable_send(
+                    user_id=user_id,
+                    reason="quota_10",
+                    media_label=media_label,
+                    active_session_id=active_session_id,
+                )
+
+            next_count = current_count + 1
+            warning_appended = False
+            if next_count == MAX_CONSECUTIVE_SENDS:
+                warning_appended = True
+                session = self._start_new_overflow_session(user_id, "quota_10")
+                active_session_id = session["id"]
+
+            try:
+                result = send_action()
+            except Exception as exc:
+                logger.error("%s发送失败: %s", media_label, exc)
+                media_name = media_name_getter() if media_name_getter else None
+                if self._is_window_limit_error(exc):
+                    limit_reason = self._resolve_limit_error_reason(
+                        user_id=user_id,
+                        state=state,
+                        now_ts=now_ts,
+                        next_count=next_count,
+                        warning_appended=warning_appended,
+                    )
+                    return self._blocked_non_replayable_send(
+                        user_id=user_id,
+                        reason=limit_reason,
+                        media_label=media_label,
+                        media_name=media_name,
+                        active_session_id=active_session_id,
+                    )
+                if self._is_delivery_uncertain_error(exc):
+                    resolved_text = record_text() if callable(record_text) else record_text
+                    resolved_meta = dict(extra_meta or {})
+                    resolved_meta["delivery_uncertain"] = True
+                    resolved_meta["delivery_error"] = str(exc)
+                    if warning_appended:
+                        resolved_meta["limit_warning"] = True
+                        resolved_meta["blocked_reason"] = "quota_10"
+                    self._record_outbound_message(
+                        contact_name=contact_name,
+                        user_id=user_id,
+                        text=resolved_text,
+                        msg_prefix="s",
+                        delivery_stage="uncertain",
+                        overflow_session_id=active_session_id if warning_appended else None,
+                        source=source,
+                        title=title,
+                        media_name=media_name,
+                        extra_meta=resolved_meta,
+                    )
+                    status, blocked_reason, saved_session_id = self._next_status_after_send(
+                        consecutive_send_count=next_count,
+                        warning_appended=warning_appended,
+                        active_session_id=active_session_id,
+                    )
+                    self._set_delivery_state(
+                        user_id,
+                        status=status,
+                        consecutive_send_count=next_count,
+                        blocked_reason=blocked_reason,
+                        active_overflow_session_id=saved_session_id,
+                    )
+                    return {
+                        "ok": True,
+                        "result": None,
+                        "warning": warning_appended,
+                        "uncertain": True,
+                        "overflow_session_id": saved_session_id,
+                        "message": "接口响应超时，消息可能已送达，已先写入消息记录。",
+                        **({"media": media_name} if media_name else {}),
+                    }
+                return {
+                    "ok": False,
+                    "error": str(exc),
+                    **({"media": media_name} if media_name else {}),
+                }
+
+            media_name = media_name_getter() if media_name_getter else None
+            resolved_text = record_text() if callable(record_text) else record_text
+            resolved_meta = dict(extra_meta or {})
+            if warning_appended:
+                resolved_meta["limit_warning"] = True
+                resolved_meta["blocked_reason"] = "quota_10"
+            self._record_outbound_message(
+                contact_name=contact_name,
+                user_id=user_id,
+                text=resolved_text,
+                msg_prefix="s",
+                delivery_stage="direct",
+                overflow_session_id=active_session_id if warning_appended else None,
+                source=source,
+                title=title,
+                media_name=media_name,
+                extra_meta=resolved_meta or None,
+            )
+            status, blocked_reason, saved_session_id = self._next_status_after_send(
+                consecutive_send_count=next_count,
+                warning_appended=warning_appended,
+                active_session_id=active_session_id,
+            )
+            self._set_delivery_state(
+                user_id,
+                status=status,
+                consecutive_send_count=next_count,
+                blocked_reason=blocked_reason,
+                active_overflow_session_id=saved_session_id,
+            )
+            return {
+                "ok": True,
+                "result": result,
+                "warning": warning_appended,
+                "overflow_session_id": saved_session_id,
+                **({"media": media_name} if media_name else {}),
+            }
+
+    def _move_outbound_video(self, filepath: str) -> tuple[str, str]:
+        media._ensure_media_dir(self._media_dir)
+        filename = f"out_video_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp4"
+        save_path = os.path.join(self._media_dir, filename)
+        shutil.move(filepath, save_path)
+        return filename, save_path
+
+    def _media_retention_hours(self) -> int:
+        return _env_int("VIDEO_MEDIA_RETENTION_HOURS", VIDEO_MEDIA_RETENTION_HOURS)
+
+    def cleanup_expired_media_files(self, *, now_ts: int | None = None, force: bool = True) -> dict:
+        """按 VIDEO_MEDIA_RETENTION_HOURS 清理已发送视频文件。"""
+        now_ts = now_ts or int(time.time())
+        if not force and now_ts - int(self._last_media_cleanup_at or 0) < VIDEO_MEDIA_CLEANUP_INTERVAL_SECONDS:
+            return {"ok": True, "skipped": True, "deleted": 0}
+        self._last_media_cleanup_at = now_ts
+        return media.cleanup_expired_media_files(
+            self._media_dir,
+            retention_hours=self._media_retention_hours(),
+            prefixes=("out_video_",),
+            now_ts=now_ts,
+        )
 
     # ── 消息处理 ──
 
@@ -672,6 +943,157 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             media_name=filename,
         )
 
+    def send_video(self, to: str, file_data: bytes, *, play_length: int = 0) -> dict:
+        """发送视频消息。"""
+        user_id = self.find_user_id(to)
+        if not user_id:
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
+
+        context_token = self.get_context_token(user_id)
+        filename = None
+
+        def _send_video():
+            nonlocal filename
+            filename = self._save_outbound_video(file_data)
+            return self.client.send_video(user_id, file_data, context_token, play_length=play_length)
+
+        return self._send_non_replayable_resolved(
+            user_id=user_id,
+            contact_name=self._contact_name(user_id, to),
+            record_text=lambda: f"[视频:{filename}]" if filename else "[视频]",
+            context_token=context_token,
+            source="video",
+            media_label="视频",
+            send_action=_send_video,
+            media_name_getter=lambda: filename,
+        )
+
+    def send_video_path(self, to: str, filepath: str, *, play_length: int = 0) -> dict:
+        """从文件路径发送视频消息，减少原视频在内存中的重复驻留。"""
+        user_id = self.find_user_id(to)
+        if not user_id:
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
+
+        context_token = self.get_context_token(user_id)
+        filename = None
+
+        def _send_video_path():
+            nonlocal filename
+            filename, save_path = self._move_outbound_video(filepath)
+            if hasattr(self.client, "send_video_path"):
+                return self.client.send_video_path(user_id, save_path, context_token, play_length=play_length)
+            with open(save_path, "rb") as fh:
+                return self.client.send_video(user_id, fh.read(), context_token, play_length=play_length)
+
+        return self._send_non_replayable_resolved(
+            user_id=user_id,
+            contact_name=self._contact_name(user_id, to),
+            record_text=lambda: f"[视频:{filename}]" if filename else "[视频]",
+            context_token=context_token,
+            source="video",
+            media_label="视频",
+            send_action=_send_video_path,
+            media_name_getter=lambda: filename,
+        )
+
+    def send_voice(self, to: str, file_data: bytes, *, playtime_ms: int = 0, text: str = "") -> dict:
+        """发送语音消息。"""
+        if not media.is_silk(file_data):
+            return {"ok": False, "error": "语音消息只支持 SILK v3 编码（#!SILK_V3），请先转换后上传。"}
+
+        user_id = self.find_user_id(to)
+        if not user_id:
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
+
+        context_token = self.get_context_token(user_id)
+        filename = None
+
+        def _send_voice():
+            nonlocal filename
+            filename = self._save_outbound_voice(file_data)
+            return self.client.send_voice(
+                user_id,
+                file_data,
+                context_token,
+                playtime_ms=playtime_ms,
+                text=text,
+            )
+
+        return self._send_non_replayable_resolved(
+            user_id=user_id,
+            contact_name=self._contact_name(user_id, to),
+            record_text=lambda: f"[语音:{filename}]" if filename else "[语音]",
+            context_token=context_token,
+            source="voice",
+            media_label="语音",
+            send_action=_send_voice,
+            media_name_getter=lambda: filename,
+        )
+
+    def send_file(self, to: str, file_data: bytes, *, file_name: str = "file.bin", text: str = "") -> dict:
+        """发送文件附件消息。"""
+        user_id = self.find_user_id(to)
+        if not user_id:
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
+
+        display_name = os.path.basename(file_name or "file.bin") or "file.bin"
+        context_token = self.get_context_token(user_id)
+        filename = None
+
+        def _send_file():
+            nonlocal filename
+            filename = self._save_outbound_file(file_data, display_name)
+            return self.client.send_file(
+                user_id,
+                file_data,
+                context_token,
+                file_name=display_name,
+                text=text,
+            )
+
+        result = self._send_non_replayable_resolved(
+            user_id=user_id,
+            contact_name=self._contact_name(user_id, to),
+            record_text=f"{text}\n[文件:{display_name}]" if text else f"[文件:{display_name}]",
+            context_token=context_token,
+            source="file",
+            media_label="文件",
+            send_action=_send_file,
+            media_name_getter=lambda: filename,
+        )
+        if result.get("ok"):
+            result["file_name"] = display_name
+        return result
+
+    def send_reference_text(self, to: str, text: str, *, ref_text: str = "", ref_title: str = "") -> dict:
+        """发送带引用文本的消息。"""
+        user_id = self.find_user_id(to)
+        if not user_id:
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
+        if not text:
+            return {"ok": False, "error": "引用消息正文不能为空"}
+        if not ref_text and not ref_title:
+            return {"ok": False, "error": "引用消息需要 ref_text 或 ref_title"}
+
+        context_token = self.get_context_token(user_id)
+        fallback_text = format_reference_fallback_text(text, ref_text=ref_text, ref_title=ref_title)
+        result = self._send_resolved(
+            user_id=user_id,
+            contact_name=self._contact_name(user_id, to),
+            text=fallback_text,
+            context_token=context_token,
+            source="reference",
+            title="引用消息",
+            allow_buffer=True,
+            rotate_session_on_warn=True,
+            record_timeline=True,
+            extra_meta={"native_reference": False, "fallback": "text_quote"},
+        )
+        if result.get("ok"):
+            result["native_reference"] = False
+            result["fallback"] = "text_quote"
+        return result
+
     # ── 长轮询主循环 ──
 
     def _poll_loop(self):
@@ -719,6 +1141,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             return
         self._running = True
         self.cleanup_expired_pending_messages(force=True)
+        self.cleanup_expired_media_files(force=True)
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._poll_thread.start()
 

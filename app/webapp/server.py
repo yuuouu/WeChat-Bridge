@@ -47,6 +47,10 @@ POST_API_ROUTES = {
     "/api/logout": api_handlers.handle_logout,
     "/api/push": api_handlers.handle_push_post,
     "/api/send_image": api_handlers.handle_send_image,
+    "/api/send_video": api_handlers.handle_send_video,
+    "/api/send_voice": api_handlers.handle_send_voice,
+    "/api/send_file": api_handlers.handle_send_file,
+    "/api/send_reference": api_handlers.handle_send_reference,
     "/api/register_commands": api_handlers.handle_register_commands,
     "/api/unregister_commands": api_handlers.handle_unregister_commands,
 }

@@ -50,6 +50,7 @@ class Plugin:
     commands: list[str] = []  # 响应的命令列表，如 ["/weather", "/echo"]
     config: dict = {}  # 由 plugin.json 或注册方注入的插件配置
     _send_func = None  # 由 PluginRegistry 注入的 bridge.send 引用
+    bridge = None  # 由 PluginRegistry 注入的 WeChatBridge 引用，供媒体插件调用
 
     def configure(self, config: dict | None = None) -> None:
         """注入插件配置。子类可覆盖此方法做配置校验或派生字段初始化。"""
@@ -114,9 +115,10 @@ class PluginRegistry:
     3. 维护命令路由表
     """
 
-    def __init__(self, event_bus: EventBus, send_func=None):
+    def __init__(self, event_bus: EventBus, send_func=None, bridge=None):
         self._bus = event_bus
         self._send_func = send_func
+        self._bridge = bridge
         self._plugins: list[Plugin] = []
         self._command_map: dict[str, list[Plugin]] = {}
 
@@ -138,6 +140,7 @@ class PluginRegistry:
         )
 
         plugin._send_func = self._send_func
+        plugin.bridge = self._bridge
         self._safe_plugin_call(plugin, "configure", config or {})
         self._plugins.append(plugin)
         sid = f"plugin:{plugin.name}"

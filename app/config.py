@@ -98,7 +98,7 @@ DEFAULT_CONFIG = {
     "webhook_url": DEFAULT_WEBHOOK_URL,
     "webhook_mode": "all_messages",
     "webhook_timeout": 5,
-    "telemetry_enabled": False,
+    "telemetry_enabled": True,
 }
 
 

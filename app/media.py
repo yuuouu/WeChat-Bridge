@@ -11,6 +11,7 @@ import base64
 import hashlib
 import logging
 import os
+import tempfile
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 MEDIA_DIR = os.environ.get("MEDIA_DIR", "./data/media")
 CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 _current_media_dir: ContextVar[str | None] = ContextVar("wechat_bridge_media_dir", default=None)
+SILK_MAGIC = b"#!SILK_V3"
 
 
 def _get_media_dir(media_dir: str | None = None) -> str:
@@ -101,6 +103,119 @@ def encrypt_aes_ecb(plaintext: bytes, aes_key: bytes) -> bytes:
 
     cipher = AES.new(aes_key, AES.MODE_ECB)
     return cipher.encrypt(padded)
+
+
+def encrypted_size_for_plain_size(size: int) -> int:
+    """返回 PKCS7 填充后的 AES-ECB 加密文件大小。"""
+    pad_len = 16 - (size % 16)
+    return size + pad_len
+
+
+def inspect_media_file(filepath: str, *, chunk_size: int = 1024 * 1024) -> dict:
+    """流式读取文件，返回上传所需的大小、MD5 和前 1024 字节。"""
+    rawfilemd5 = hashlib.md5()
+    first1024 = bytearray()
+    rawsize = 0
+    with open(filepath, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            rawsize += len(chunk)
+            rawfilemd5.update(chunk)
+            if len(first1024) < 1024:
+                first1024.extend(chunk[: 1024 - len(first1024)])
+    return {
+        "rawsize": rawsize,
+        "rawfilemd5": rawfilemd5.hexdigest(),
+        "first1024": bytes(first1024),
+        "encrypted_size": encrypted_size_for_plain_size(rawsize),
+    }
+
+
+def encrypt_aes_ecb_file(src_path: str, dst_path: str, aes_key: bytes, *, chunk_size: int = 1024 * 1024) -> int:
+    """将文件流式 AES-128-ECB 加密到目标路径，返回加密后大小。"""
+    if len(aes_key) != 16:
+        raise ValueError(f"AES-128 密钥长度必须为 16 字节，实际: {len(aes_key)}")
+
+    cipher = AES.new(aes_key, AES.MODE_ECB)
+    pending = b""
+    written = 0
+    with open(src_path, "rb") as src, open(dst_path, "wb") as dst:
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            pending += chunk
+            aligned_len = (len(pending) // 16) * 16
+            if aligned_len:
+                encrypted = cipher.encrypt(pending[:aligned_len])
+                dst.write(encrypted)
+                written += len(encrypted)
+                pending = pending[aligned_len:]
+
+        pad_len = 16 - (len(pending) % 16)
+        encrypted = cipher.encrypt(pending + bytes([pad_len]) * pad_len)
+        dst.write(encrypted)
+        written += len(encrypted)
+    return written
+
+
+def create_encrypted_upload_file(src_path: str, aes_key: bytes, *, temp_dir: str | None = None) -> tuple[str, int]:
+    """创建用于 CDN 上传的临时加密文件，调用方负责删除。"""
+    directory = temp_dir or os.path.dirname(os.path.abspath(src_path)) or None
+    fd, tmp_path = tempfile.mkstemp(prefix=".wb_upload_", suffix=".enc", dir=directory)
+    os.close(fd)
+    try:
+        encrypted_size = encrypt_aes_ecb_file(src_path, tmp_path, aes_key)
+        return tmp_path, encrypted_size
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def cleanup_expired_media_files(
+    media_dir: str,
+    *,
+    retention_hours: int,
+    prefixes: tuple[str, ...] = ("out_video_",),
+    now_ts: int | None = None,
+) -> dict:
+    """删除超过保留时间的指定前缀媒体文件。"""
+    if retention_hours <= 0:
+        return {"ok": True, "skipped": True, "deleted": 0, "retention_hours": retention_hours}
+    if not os.path.isdir(media_dir):
+        return {"ok": True, "deleted": 0, "retention_hours": retention_hours}
+
+    now_ts = now_ts or int(time.time())
+    cutoff = now_ts - retention_hours * 3600
+    deleted = []
+    errors = []
+    for entry in os.scandir(media_dir):
+        if not entry.is_file():
+            continue
+        if not entry.name.startswith(prefixes):
+            continue
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            os.unlink(entry.path)
+            deleted.append(entry.name)
+        except OSError as exc:
+            errors.append({"file": entry.name, "error": str(exc)})
+
+    if deleted:
+        logger.info("过期媒体文件清理完成: deleted=%d, retention_hours=%d", len(deleted), retention_hours)
+    return {
+        "ok": not errors,
+        "deleted": len(deleted),
+        "files": deleted,
+        "errors": errors,
+        "retention_hours": retention_hours,
+    }
 
 
 def _decode_aes_key(aes_key_b64: str, media_type: str = "image") -> bytes:
@@ -277,6 +392,8 @@ def _detect_media_format(data: bytes, media_type: str = "video") -> str:
         return "flv"
 
     # 音频格式
+    if is_silk(data):
+        return "silk"
     if data[:4] == b"#!AM":  # AMR
         return "amr"
     if data[:4] == b"fLaC":  # FLAC
@@ -289,6 +406,11 @@ def _detect_media_format(data: bytes, media_type: str = "video") -> str:
     ext = default.get(media_type, "bin")
     logger.info("无法识别 %s 格式 (magic: %s)，默认使用 %s", media_type, data[:8].hex(), ext)
     return ext
+
+
+def is_silk(data: bytes) -> bool:
+    """判断是否为微信语音可直接发送的 SILK v3 数据。"""
+    return data.startswith(SILK_MAGIC) or data.startswith(b"\x02" + SILK_MAGIC)
 
 
 def get_media_path(filename: str, media_dir: str | None = None) -> str | None:

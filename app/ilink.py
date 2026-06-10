@@ -11,6 +11,7 @@ import logging
 import os
 import struct
 import time
+from pathlib import Path
 
 import requests
 
@@ -36,6 +37,22 @@ MESSAGE_ITEM_TYPE_IMAGE = 2
 MESSAGE_ITEM_TYPE_VOICE = 3
 MESSAGE_ITEM_TYPE_FILE = 4
 MESSAGE_ITEM_TYPE_VIDEO = 5
+
+
+def format_reference_fallback_text(text: str, *, ref_text: str = "", ref_title: str = "") -> str:
+    """将引用消息降级为普通文本。
+
+    OpenClaw 目前只在入站解析中使用 ref_msg；直接下发 ref_msg 会返回成功，
+    但微信客户端不会渲染成原生引用气泡。
+    """
+    ref_parts = []
+    if ref_title:
+        ref_parts.append(ref_title.strip())
+    if ref_text:
+        normalized_ref_text = " ".join(ref_text.split())
+        ref_parts.append(normalized_ref_text[:80] + ("..." if len(normalized_ref_text) > 80 else ""))
+    ref_preview = " | ".join(part for part in ref_parts if part)
+    return f"[引用:{ref_preview}]\n{text}"
 
 
 def _random_uin() -> str:
@@ -425,11 +442,11 @@ class ILinkClient:
             raise RuntimeError(f"获取上传 URL 失败: {json.dumps(upload_data, ensure_ascii=False)}")
 
         upload_param = upload_data.get("upload_param", "")
-        if not upload_param:
-            raise RuntimeError(f"上传参数为空: {json.dumps(upload_data, ensure_ascii=False)}")
+        cdn_upload_url = upload_data.get("upload_full_url", "").strip()
+        if not upload_param and not cdn_upload_url:
+            raise RuntimeError(f"上传 URL 为空: {json.dumps(upload_data, ensure_ascii=False)}")
 
         # 5. 上传加密文件到 CDN
-        cdn_upload_url = upload_data.get("upload_full_url", "")
         if not cdn_upload_url:
             import urllib.parse
 
@@ -454,7 +471,9 @@ class ILinkClient:
                 "CDN 上传成功但似乎没有返回 x-encrypted-param，使用 upload_param 可能会导致客户端无法下载。Headers: %s",
                 upload_resp.headers,
             )
-            download_ref = upload_param
+            download_ref = upload_param or upload_data.get("upload_full_url", "")
+        if not download_ref:
+            raise RuntimeError("CDN 上传成功但缺少下载凭证")
 
         logger.info(
             "媒体上传成功: filekey=%s, size=%d, encrypted_size=%d", filekey, len(file_data), len(encrypted_data)
@@ -470,6 +489,96 @@ class ILinkClient:
             "aes_key_hex": aes_key_hex,
             "file_size": len(file_data),
             "encrypted_size": len(encrypted_data),
+        }
+
+    def upload_media_path(self, filepath: str, media_type: int = UPLOAD_MEDIA_TYPE_VIDEO, to_user_id: str = "") -> dict:
+        """从文件路径上传媒体，避免把原始媒体整体读入内存。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+
+        import hashlib
+
+        import media as media_mod
+
+        path = str(Path(filepath))
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+
+        aes_key = os.urandom(16)
+        meta = media_mod.inspect_media_file(path)
+        filekey = hashlib.md5(meta["first1024"] + str(time.time()).encode()).hexdigest()
+        encrypted_path, encrypted_size = media_mod.create_encrypted_upload_file(path, aes_key)
+
+        upload_req = {
+            "filekey": filekey,
+            "media_type": media_type,
+            "rawsize": meta["rawsize"],
+            "rawfilemd5": meta["rawfilemd5"],
+            "filesize": encrypted_size,
+            "no_need_thumb": True,
+            "aeskey": aes_key.hex(),
+            "to_user_id": to_user_id,
+        }
+        logger.info("getuploadurl req: %s", json.dumps(upload_req))
+        try:
+            upload_data = self._post_json(
+                "ilink/bot/getuploadurl",
+                upload_req,
+                token=self.bot_token,
+                timeout=15,
+            )
+
+            ret = upload_data.get("ret", 0)
+            if ret != 0:
+                raise RuntimeError(f"获取上传 URL 失败: {json.dumps(upload_data, ensure_ascii=False)}")
+
+            upload_param = upload_data.get("upload_param", "")
+            cdn_upload_url = upload_data.get("upload_full_url", "").strip()
+            if not upload_param and not cdn_upload_url:
+                raise RuntimeError(f"上传 URL 为空: {json.dumps(upload_data, ensure_ascii=False)}")
+
+            if not cdn_upload_url:
+                import urllib.parse
+
+                cdn_upload_url = f"https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param={urllib.parse.quote(upload_param)}&filekey={urllib.parse.quote(filekey)}"
+
+            with open(encrypted_path, "rb") as encrypted_fh:
+                upload_resp = self._session.post(
+                    cdn_upload_url,
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    },
+                    data=encrypted_fh,
+                    timeout=60,
+                )
+            upload_resp.raise_for_status()
+        finally:
+            try:
+                os.unlink(encrypted_path)
+            except OSError:
+                pass
+
+        download_ref = upload_resp.headers.get("X-Encrypted-Param") or upload_resp.headers.get("x-encrypted-param")
+        if not download_ref:
+            logger.warning(
+                "CDN 上传成功但似乎没有返回 x-encrypted-param，使用 upload_param 可能会导致客户端无法下载。Headers: %s",
+                upload_resp.headers,
+            )
+            download_ref = upload_param or upload_data.get("upload_full_url", "")
+        if not download_ref:
+            raise RuntimeError("CDN 上传成功但缺少下载凭证")
+
+        logger.info("媒体文件上传成功: filekey=%s, size=%d, encrypted_size=%d", filekey, meta["rawsize"], encrypted_size)
+
+        aes_key_hex = aes_key.hex()
+        aes_key_b64 = base64.b64encode(aes_key_hex.encode("utf-8")).decode()
+        return {
+            "encrypt_query_param": download_ref,
+            "aes_key_b64": aes_key_b64,
+            "aes_key_hex": aes_key_hex,
+            "file_size": meta["rawsize"],
+            "encrypted_size": encrypted_size,
         }
 
     def send_image(self, to_user_id: str, file_data: bytes, context_token: str = "") -> dict:
@@ -531,3 +640,352 @@ class ILinkClient:
 
         logger.info("发送图片到 %s: %d bytes (ret=%s)", to_user_id[:20], len(file_data), ret)
         return data
+
+    def send_video(self, to_user_id: str, file_data: bytes, context_token: str = "", play_length: int = 0) -> dict:
+        """
+        发送视频消息
+
+        参数:
+            to_user_id: 目标用户 ID
+            file_data: 原始视频字节
+            context_token: 对话关联 token
+            play_length: 视频时长（秒），未知可传 0
+        返回:
+            API 响应 dict
+        """
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+
+        upload_result = self.upload_media(file_data, media_type=UPLOAD_MEDIA_TYPE_VIDEO, to_user_id=to_user_id)
+
+        video_item = {
+            "media": {
+                "encrypt_query_param": upload_result["encrypt_query_param"],
+                "aes_key": upload_result["aes_key_b64"],
+                "encrypt_type": 1,
+            },
+            "video_size": upload_result["encrypted_size"],
+        }
+        if play_length > 0:
+            video_item["play_length"] = play_length
+
+        client_id = f"openclaw-weixin:{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        payload = {
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": to_user_id,
+                "client_id": client_id,
+                "message_type": 2,  # BOT 发出
+                "message_state": 2,  # FINISH
+                "context_token": context_token,
+                "item_list": [
+                    {
+                        "type": MESSAGE_ITEM_TYPE_VIDEO,
+                        "video_item": video_item,
+                    }
+                ],
+            },
+        }
+
+        data = self._post_json(
+            "ilink/bot/sendmessage",
+            payload,
+            token=self.bot_token,
+            timeout=15,
+        )
+        ret = data.get("ret", 0)
+        errcode = data.get("errcode", 0)
+        if ret != 0 or errcode != 0:
+            logger.error("发送视频失败: %s", json.dumps(data, ensure_ascii=False))
+            if ret == -2:
+                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
+            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
+
+        logger.info("发送视频到 %s: %d bytes (ret=%s)", to_user_id[:20], len(file_data), ret)
+        return data
+
+    def _send_uploaded_voice(
+        self,
+        to_user_id: str,
+        upload_result: dict,
+        context_token: str = "",
+        *,
+        playtime_ms: int = 0,
+        text: str = "",
+    ) -> dict:
+        voice_item = {
+            "media": {
+                "encrypt_query_param": upload_result["encrypt_query_param"],
+                "aes_key": upload_result["aes_key_b64"],
+                "encrypt_type": 1,
+            },
+            "encode_type": 1,
+            "bits_per_sample": 16,
+            "sample_rate": 8000,
+            "playtime": max(0, int(playtime_ms or 0)),
+            "text": text or "",
+        }
+
+        client_id = f"openclaw-weixin:{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        payload = {
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": to_user_id,
+                "client_id": client_id,
+                "message_type": 2,
+                "message_state": 2,
+                "context_token": context_token,
+                "item_list": [
+                    {
+                        "type": MESSAGE_ITEM_TYPE_VOICE,
+                        "voice_item": voice_item,
+                    }
+                ],
+            },
+        }
+
+        data = self._post_json(
+            "ilink/bot/sendmessage",
+            payload,
+            token=self.bot_token,
+            timeout=15,
+        )
+        ret = data.get("ret", 0)
+        errcode = data.get("errcode", 0)
+        if ret != 0 or errcode != 0:
+            logger.error("发送语音失败: %s", json.dumps(data, ensure_ascii=False))
+            if ret == -2:
+                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
+            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
+        logger.info("发送语音到 %s: %d bytes (ret=%s)", to_user_id[:20], upload_result.get("file_size", 0), ret)
+        return data
+
+    def send_voice(
+        self,
+        to_user_id: str,
+        file_data: bytes,
+        context_token: str = "",
+        *,
+        playtime_ms: int = 0,
+        text: str = "",
+    ) -> dict:
+        """发送语音消息。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+        upload_result = self.upload_media(file_data, media_type=UPLOAD_MEDIA_TYPE_VOICE, to_user_id=to_user_id)
+        return self._send_uploaded_voice(
+            to_user_id,
+            upload_result,
+            context_token,
+            playtime_ms=playtime_ms,
+            text=text,
+        )
+
+    def send_voice_path(
+        self,
+        to_user_id: str,
+        filepath: str,
+        context_token: str = "",
+        *,
+        playtime_ms: int = 0,
+        text: str = "",
+    ) -> dict:
+        """从文件路径发送语音消息。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+        upload_result = self.upload_media_path(filepath, media_type=UPLOAD_MEDIA_TYPE_VOICE, to_user_id=to_user_id)
+        return self._send_uploaded_voice(
+            to_user_id,
+            upload_result,
+            context_token,
+            playtime_ms=playtime_ms,
+            text=text,
+        )
+
+    def send_video_path(self, to_user_id: str, filepath: str, context_token: str = "", play_length: int = 0) -> dict:
+        """从文件路径发送视频消息。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+
+        upload_result = self.upload_media_path(filepath, media_type=UPLOAD_MEDIA_TYPE_VIDEO, to_user_id=to_user_id)
+
+        video_item = {
+            "media": {
+                "encrypt_query_param": upload_result["encrypt_query_param"],
+                "aes_key": upload_result["aes_key_b64"],
+                "encrypt_type": 1,
+            },
+            "video_size": upload_result["encrypted_size"],
+        }
+        if play_length > 0:
+            video_item["play_length"] = play_length
+
+        client_id = f"openclaw-weixin:{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        payload = {
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": to_user_id,
+                "client_id": client_id,
+                "message_type": 2,
+                "message_state": 2,
+                "context_token": context_token,
+                "item_list": [
+                    {
+                        "type": MESSAGE_ITEM_TYPE_VIDEO,
+                        "video_item": video_item,
+                    }
+                ],
+            },
+        }
+
+        data = self._post_json(
+            "ilink/bot/sendmessage",
+            payload,
+            token=self.bot_token,
+            timeout=15,
+        )
+        ret = data.get("ret", 0)
+        errcode = data.get("errcode", 0)
+        if ret != 0 or errcode != 0:
+            logger.error("发送视频失败: %s", json.dumps(data, ensure_ascii=False))
+            if ret == -2:
+                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
+            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
+
+        logger.info("发送视频到 %s: %d bytes (ret=%s)", to_user_id[:20], upload_result["file_size"], ret)
+        return data
+
+    def send_file(
+        self,
+        to_user_id: str,
+        file_data: bytes,
+        context_token: str = "",
+        *,
+        file_name: str = "file.bin",
+        text: str = "",
+    ) -> dict:
+        """发送文件附件消息。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+
+        upload_result = self.upload_media(file_data, media_type=UPLOAD_MEDIA_TYPE_FILE, to_user_id=to_user_id)
+        return self._send_uploaded_file(
+            to_user_id,
+            upload_result,
+            context_token,
+            file_name=file_name,
+            text=text,
+        )
+
+    def send_file_path(
+        self,
+        to_user_id: str,
+        filepath: str,
+        context_token: str = "",
+        *,
+        file_name: str = "",
+        text: str = "",
+    ) -> dict:
+        """从文件路径发送文件附件消息。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+
+        path = str(Path(filepath))
+        upload_result = self.upload_media_path(path, media_type=UPLOAD_MEDIA_TYPE_FILE, to_user_id=to_user_id)
+        return self._send_uploaded_file(
+            to_user_id,
+            upload_result,
+            context_token,
+            file_name=file_name or Path(path).name,
+            text=text,
+        )
+
+    def _send_uploaded_file(
+        self,
+        to_user_id: str,
+        upload_result: dict,
+        context_token: str = "",
+        *,
+        file_name: str = "file.bin",
+        text: str = "",
+    ) -> dict:
+        items = []
+        if text:
+            items.append({"type": MESSAGE_ITEM_TYPE_TEXT, "text_item": {"text": text}})
+        items.append(
+            {
+                "type": MESSAGE_ITEM_TYPE_FILE,
+                "file_item": {
+                    "media": {
+                        "encrypt_query_param": upload_result["encrypt_query_param"],
+                        "aes_key": upload_result["aes_key_b64"],
+                        "encrypt_type": 1,
+                    },
+                    "file_name": file_name or "file.bin",
+                    "len": str(upload_result["file_size"]),
+                },
+            }
+        )
+        return self._send_items(to_user_id, items, context_token, label="发送文件")
+
+    def send_reference_text(
+        self,
+        to_user_id: str,
+        text: str,
+        context_token: str = "",
+        *,
+        ref_text: str = "",
+        ref_title: str = "",
+    ) -> dict:
+        """发送引用样式文本。
+
+        iLink 接口会接受 ref_msg 字段，但当前微信客户端不会按原生引用渲染；
+        因此这里显式降级为普通文本，避免对外承诺不存在的原生 quote 能力。
+        """
+        if not text:
+            raise ValueError("引用消息正文不能为空")
+        if not ref_text and not ref_title:
+            raise ValueError("引用消息需要 ref_text 或 ref_title")
+
+        fallback_text = format_reference_fallback_text(text, ref_text=ref_text, ref_title=ref_title)
+        data = self.send_text(to_user_id, fallback_text, context_token)
+        data["native_reference"] = False
+        data["fallback"] = "text_quote"
+        return data
+
+    def _send_items(self, to_user_id: str, items: list[dict], context_token: str = "", *, label: str = "发送消息") -> dict:
+        """发送一组结构化 MessageItem。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录，请先扫码")
+
+        last_data = {}
+        for item in items:
+            client_id = f"openclaw-weixin:{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+            payload = {
+                "msg": {
+                    "from_user_id": "",
+                    "to_user_id": to_user_id,
+                    "client_id": client_id,
+                    "message_type": 2,
+                    "message_state": 2,
+                    "context_token": context_token,
+                    "item_list": [item],
+                },
+            }
+            data = self._post_json(
+                "ilink/bot/sendmessage",
+                payload,
+                token=self.bot_token,
+                timeout=15,
+            )
+            ret = data.get("ret", 0)
+            errcode = data.get("errcode", 0)
+            if ret != 0 or errcode != 0:
+                logger.error("%s失败: %s", label, json.dumps(data, ensure_ascii=False))
+                if ret == -2:
+                    raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
+                raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
+            last_data = data
+
+        logger.info("%s到 %s: items=%d (ret=%s)", label, to_user_id[:20], len(items), last_data.get("ret", 0))
+        return last_data

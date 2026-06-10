@@ -8,7 +8,9 @@ import importlib.util
 import json
 import logging
 import mimetypes
+import os
 import queue
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -20,7 +22,7 @@ import media as media_mod
 from version import __version__
 from webapp.auth import check_web_session, make_session_cookie
 from webapp.markdown_utils import apply_markdown_mode
-from webapp.request_utils import parse_multipart
+from webapp.request_utils import parse_multipart, parse_multipart_form
 from webapp.ui.qr_page import _url_to_qr_base64
 from webapp.webhook_parser import parse_webhook_payload
 
@@ -220,11 +222,31 @@ def _load_weather_module():
     return module
 
 
-def _query_weather_snapshot(city: str) -> dict:
+def _query_weather_snapshot(city: str, *, force_refresh: bool = False, include_minutely=None) -> dict:
     module = _load_weather_module()
     if not hasattr(module, "build_weather_snapshot"):
         raise RuntimeError("天气插件未提供结构化查询能力")
-    return module.build_weather_snapshot(city)
+    return module.build_weather_snapshot(city, force_refresh=force_refresh, include_minutely=include_minutely)
+
+
+def _weather_error_payload(exc: Exception) -> dict:
+    payload = {"ok": False, "error": str(exc)}
+    candidates = getattr(exc, "candidates", None)
+    if candidates:
+        payload["candidates"] = candidates
+    status_code = getattr(exc, "status_code", None)
+    if status_code:
+        payload["status_code"] = status_code
+    return payload
+
+
+def _weather_error_status(exc: Exception) -> int:
+    if getattr(exc, "candidates", None):
+        return 400
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {400, 401, 402, 403, 404, 429}:
+        return int(status_code)
+    return 500
 
 
 def _send_target(ctx, default_bridge, target: str, text: str, *, source: str = "api", title: str = "") -> dict:
@@ -278,6 +300,15 @@ def _bot_id_from(params=None, data=None) -> str:
 
 def _truthy_param(params, name: str) -> bool:
     return params.get(name, [""])[0].strip().lower() in {"1", "true", "yes"}
+
+
+def _bool_value(value, default=None):
+    text = str(value if value is not None else "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _contacts_payload(bridge, *, include_history: bool = False) -> dict:
@@ -786,10 +817,17 @@ def handle_weather_query_get(handler, ctx, params):
         handler._json_response({"ok": False, "error": "缺少 city 参数"}, 400)
         return
     try:
-        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city)})
+        force_refresh = (
+            _truthy_param(params, "force")
+            or _truthy_param(params, "refresh")
+            or _truthy_param(params, "latest")
+            or _truthy_param(params, "no_cache")
+        )
+        include_minutely = _bool_value(params.get("include_minutely", [""])[0], None)
+        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city, force_refresh=force_refresh, include_minutely=include_minutely)})
     except Exception as exc:
         logger.warning("天气结构化查询失败 [%s]: %s", city, exc)
-        handler._json_response({"ok": False, "error": str(exc)}, 500)
+        handler._json_response(_weather_error_payload(exc), _weather_error_status(exc))
 
 
 def handle_weather_query_post(handler, ctx, params, body):
@@ -803,10 +841,12 @@ def handle_weather_query_post(handler, ctx, params, body):
         handler._json_response({"ok": False, "error": "缺少 city 参数"}, 400)
         return
     try:
-        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city)})
+        force_refresh = any(_bool_value(data.get(name), False) for name in ("force", "refresh", "latest", "no_cache"))
+        include_minutely = _bool_value(data.get("include_minutely"), None)
+        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city, force_refresh=force_refresh, include_minutely=include_minutely)})
     except Exception as exc:
         logger.warning("天气结构化查询失败 [%s]: %s", city, exc)
-        handler._json_response({"ok": False, "error": str(exc)}, 500)
+        handler._json_response(_weather_error_payload(exc), _weather_error_status(exc))
 
 
 def handle_run_command(handler, ctx, params, body):
@@ -1086,6 +1126,256 @@ def handle_send_image(handler, ctx, params, body):
 
     bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
     result = bridge.send_image(resolved_to, image_data)
+    if routed_bot_id:
+        result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_to}
+    handler._json_response(result, 200 if result.get("ok") else 400)
+
+
+def handle_send_video(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+
+    to = ""
+    video_data = None
+    data = {}
+    play_length = 0
+    content_type = handler.headers.get("Content-Type", "")
+
+    if "multipart/form-data" in content_type:
+        to, video_data = parse_multipart(body, content_type, logger)
+    elif content_type.startswith("application/json"):
+        try:
+            data = json.loads(body) if body else {}
+            to = data.get("to", "")
+            play_length = int(data.get("play_length") or 0)
+            video_b64 = data.get("video", "")
+            if video_b64:
+                video_data = base64.b64decode(video_b64)
+        except Exception as exc:
+            handler._json_response({"ok": False, "error": f"JSON 解析失败: {exc}"}, 400)
+            return
+    else:
+        video_data = body
+
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
+        return
+
+    if not play_length:
+        try:
+            play_length = int(params.get("play_length", ["0"])[0] or 0)
+        except ValueError:
+            play_length = 0
+
+    to = _pick_default_contact(
+        runtime.bridge,
+        to or params.get("to", [""])[0],
+        request_path="/api/send_video",
+        source="video",
+        message_len=len(video_data or b""),
+    )
+    if not to:
+        handler._json_response({"ok": False, "error": "缺少 to 参数且无联系人"}, 400)
+        return
+    if not video_data or len(video_data) < 1024:
+        handler._json_response({"ok": False, "error": "缺少视频数据或数据过小"}, 400)
+        return
+    if len(video_data) > 50 * 1024 * 1024:
+        handler._json_response({"ok": False, "error": "视频大小不能超过 50MB"}, 400)
+        return
+
+    bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
+    result = None
+    tmp_path = ""
+    if hasattr(bridge, "send_video_path"):
+        fd, tmp_path = tempfile.mkstemp(prefix="wb_api_video_", suffix=".mp4")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(video_data)
+            result = bridge.send_video_path(resolved_to, tmp_path, play_length=play_length)
+            tmp_path = ""
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+    else:
+        result = bridge.send_video(resolved_to, video_data, play_length=play_length)
+    if routed_bot_id:
+        result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_to}
+    handler._json_response(result, 200 if result.get("ok") else 400)
+
+
+def handle_send_voice(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+
+    to = ""
+    voice_data = None
+    data = {}
+    playtime_ms = 0
+    text = ""
+    content_type = handler.headers.get("Content-Type", "")
+
+    if "multipart/form-data" in content_type:
+        to, voice_data = parse_multipart(body, content_type, logger)
+    elif content_type.startswith("application/json"):
+        try:
+            data = json.loads(body) if body else {}
+            to = data.get("to", "")
+            playtime_ms = int(data.get("playtime_ms") or data.get("playtime") or 0)
+            text = str(data.get("text") or "")
+            voice_b64 = data.get("voice") or data.get("audio") or ""
+            if voice_b64:
+                voice_data = base64.b64decode(voice_b64)
+        except Exception as exc:
+            handler._json_response({"ok": False, "error": f"JSON 解析失败: {exc}"}, 400)
+            return
+    else:
+        voice_data = body
+
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
+        return
+
+    if not playtime_ms:
+        try:
+            playtime_ms = int(params.get("playtime_ms", ["0"])[0] or params.get("playtime", ["0"])[0] or 0)
+        except ValueError:
+            playtime_ms = 0
+
+    to = _pick_default_contact(
+        runtime.bridge,
+        to or params.get("to", [""])[0],
+        request_path="/api/send_voice",
+        source="voice",
+        message_len=len(voice_data or b""),
+    )
+    if not to:
+        handler._json_response({"ok": False, "error": "缺少 to 参数且无联系人"}, 400)
+        return
+    if not voice_data or len(voice_data) < 64:
+        handler._json_response({"ok": False, "error": "缺少语音数据或数据过小"}, 400)
+        return
+    if len(voice_data) > 10 * 1024 * 1024:
+        handler._json_response({"ok": False, "error": "语音大小不能超过 10MB"}, 400)
+        return
+    if not media_mod.is_silk(voice_data):
+        handler._json_response({"ok": False, "error": "语音消息只支持 SILK v3 编码（#!SILK_V3），请先转换后上传。"}, 400)
+        return
+
+    bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
+    result = bridge.send_voice(resolved_to, voice_data, playtime_ms=playtime_ms, text=text)
+    if routed_bot_id:
+        result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_to}
+    handler._json_response(result, 200 if result.get("ok") else 400)
+
+
+def handle_send_file(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+
+    to = ""
+    file_data = None
+    file_name = ""
+    text = ""
+    data = {}
+    content_type = handler.headers.get("Content-Type", "")
+
+    if "multipart/form-data" in content_type:
+        parsed = parse_multipart_form(body, content_type, logger)
+        fields = parsed["fields"]
+        files = parsed["files"]
+        file_part = files.get("file")
+        if file_part:
+            file_data = file_part["content"]
+            file_name = file_part.get("filename") or ""
+        to = fields.get("to", "")
+        text = fields.get("text", "") or fields.get("content", "")
+        data = {"bot_id": fields.get("bot_id", "")}
+    elif content_type.startswith("application/json"):
+        try:
+            data = json.loads(body) if body else {}
+            to = data.get("to", "")
+            text = str(data.get("text") or data.get("content") or "")
+            file_name = str(data.get("file_name") or data.get("filename") or "file.bin")
+            file_b64 = data.get("file") or data.get("data") or ""
+            if file_b64:
+                file_data = base64.b64decode(file_b64)
+        except Exception as exc:
+            handler._json_response({"ok": False, "error": f"JSON 解析失败: {exc}"}, 400)
+            return
+    else:
+        file_data = body
+        file_name = params.get("file_name", [""])[0] or params.get("filename", [""])[0] or "file.bin"
+
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
+        return
+
+    to = _pick_default_contact(
+        runtime.bridge,
+        to or params.get("to", [""])[0],
+        request_path="/api/send_file",
+        source="file",
+        message_len=len(file_data or b""),
+    )
+    if not to:
+        handler._json_response({"ok": False, "error": "缺少 to 参数且无联系人"}, 400)
+        return
+    if not file_data:
+        handler._json_response({"ok": False, "error": "缺少文件数据"}, 400)
+        return
+    if len(file_data) > 50 * 1024 * 1024:
+        handler._json_response({"ok": False, "error": "文件大小不能超过 50MB"}, 400)
+        return
+
+    bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
+    result = bridge.send_file(resolved_to, file_data, file_name=file_name or "file.bin", text=text)
+    if routed_bot_id:
+        result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_to}
+    handler._json_response(result, 200 if result.get("ok") else 400)
+
+
+def handle_send_reference(handler, ctx, params, body):
+    if not handler._check_api_token():
+        return
+
+    data = {}
+    if body:
+        try:
+            data = json.loads(body)
+        except Exception as exc:
+            handler._json_response({"ok": False, "error": f"JSON 解析失败: {exc}"}, 400)
+            return
+
+    runtime = _resolve_runtime(handler, ctx, params, data, require_logged_in=True)
+    if runtime is None:
+        return
+
+    text = str(data.get("text") or data.get("content") or params.get("text", [""])[0] or params.get("content", [""])[0])
+    ref_text = str(data.get("ref_text") or data.get("quote_text") or params.get("ref_text", [""])[0] or params.get("quote_text", [""])[0])
+    ref_title = str(data.get("ref_title") or data.get("quote_title") or params.get("ref_title", [""])[0] or params.get("quote_title", [""])[0])
+    to = _pick_default_contact(
+        runtime.bridge,
+        str(data.get("to") or params.get("to", [""])[0]),
+        request_path="/api/send_reference",
+        source="reference",
+        message_len=len(text),
+    )
+    if not to:
+        handler._json_response({"ok": False, "error": "缺少 to 参数且无联系人"}, 400)
+        return
+    if not text:
+        handler._json_response({"ok": False, "error": "引用消息正文不能为空"}, 400)
+        return
+    if not ref_text and not ref_title:
+        handler._json_response({"ok": False, "error": "引用消息需要 ref_text 或 ref_title"}, 400)
+        return
+
+    bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
+    result = bridge.send_reference_text(resolved_to, text, ref_text=ref_text, ref_title=ref_title)
     if routed_bot_id:
         result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_to}
     handler._json_response(result, 200 if result.get("ok") else 400)

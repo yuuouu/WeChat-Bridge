@@ -94,6 +94,10 @@ LOGGED_IN_CONTENT = """
             <strong id="currentDeliveryStatus">正常</strong>
           </div>
           <div class="delivery-detail-line">
+            <span>连续发送</span>
+            <strong id="currentConsecutiveCount">0/10</strong>
+          </div>
+          <div class="delivery-detail-line">
             <span>原因</span>
             <strong id="currentBlockedReason">无</strong>
           </div>
@@ -135,12 +139,12 @@ LOGGED_IN_CONTENT = """
       <div class="chat-input-area">
         <input type="hidden" id="contact" value="">
 
-        <label for="imgUpload" class="img-upload-btn" title="发送图片" aria-label="发送图片">
+        <label for="mediaUpload" class="img-upload-btn" title="发送媒体" aria-label="发送媒体">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"></path>
           </svg>
         </label>
-        <input type="file" id="imgUpload" accept="image/*" style="display: none;">
+        <input type="file" id="mediaUpload" style="display: none;">
 
         <textarea id="ipt" class="chat-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" rows="1" autocomplete="off"></textarea>
         <button id="sendBtn" class="send-btn">发送</button>
@@ -264,10 +268,10 @@ LOGGED_IN_CONTENT = """
     <h3 style="margin-bottom: 15px; font-size:15px; color:#ddd;">📊 匿名使用统计</h3>
     <div class="form-group">
       <div class="toggle-switch" onclick="toggleTelemetry()">
-        <div class="toggle-track" id="telemetryToggle"><div class="toggle-knob"></div></div>
-        <span id="telemetryToggleLabel">匿名统计已关闭</span>
+        <div class="toggle-track on" id="telemetryToggle"><div class="toggle-knob"></div></div>
+        <span id="telemetryToggleLabel">匿名统计已开启</span>
       </div>
-      <div style="color:#888; font-size:12px; margin-top:6px;">开启后，启动时发送匿名技术指标（版本号、操作系统、架构、Python 版本、部署方式），帮助开发者了解兼容性需求。<strong>不含任何个人信息。</strong></div>
+      <div style="color:#888; font-size:12px; margin-top:6px;">开启后，启动与运行时发送匿名技术指标（版本号、操作系统、架构、Python 版本、部署方式、运行天数、绑定账号数、AI提供商、插件数、Webhook状态、启用功能），帮助开发者了解兼容性需求。<strong>不含任何个人信息。</strong></div>
     </div>
 
     <div style="border-top: 1px solid #444; margin: 20px 0;"></div>

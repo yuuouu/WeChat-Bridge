@@ -10,6 +10,7 @@ import logging
 import os
 import signal
 import sys
+import time
 
 # 配置日志
 log_format = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
@@ -51,6 +52,8 @@ def main():
     port = int(os.environ.get("PORT", "5200"))
     # Docker 容器内不应打开浏览器
     auto_open = os.environ.get("NO_BROWSER", "").lower() not in ("1", "true", "yes")
+    start_time = time.time()
+    account_manager = None
 
     logger.info("=" * 50)
     logger.info("WeChat Bridge 启动中...")
@@ -75,78 +78,133 @@ def main():
 
     # ==== 检测更新 ====
     def check_for_updates():
-        update_base_url = os.environ.get("UPDATE_CHECK_URL", "https://wb.yuuou.qzz.io")
-        if os.environ.get("DISABLE_UPDATE_CHECK", "").lower() in ("1", "true"):
-            logger.debug("更新检查已禁用 (DISABLE_UPDATE_CHECK=1)")
-            return
+        import time as _time
+        # 延迟 10 秒启动第一次检测，确保 main() 中 account_manager 等初始化完成
+        _time.sleep(10)
 
-        try:
-            import json
-            import subprocess
-            import urllib.request
+        while True:
+            update_base_url = os.environ.get("UPDATE_CHECK_URL", "https://wb.yuuou.qzz.io")
+            if os.environ.get("DISABLE_UPDATE_CHECK", "").lower() in ("1", "true"):
+                logger.debug("更新检查已禁用 (DISABLE_UPDATE_CHECK=1)")
+            else:
+                try:
+                    import json
+                    import subprocess
+                    import urllib.request
 
-            # 尝试获取本地 Git Commit
-            try:
-                local_commit = (
-                    subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.STDOUT, cwd=_project_root)
-                    .decode("utf-8")
-                    .strip()
-                )
-            except Exception:
-                local_commit = None
+                    # 尝试获取本地 Git Commit
+                    try:
+                        local_commit = (
+                            subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.STDOUT, cwd=_project_root)
+                            .decode("utf-8")
+                            .strip()
+                        )
+                    except Exception:
+                        local_commit = None
 
-            req = urllib.request.Request(
-                update_base_url,
-                headers={"User-Agent": "WeChat-Bridge-Updater"},
-            )
-            with urllib.request.urlopen(req, timeout=5) as response:
-                data = json.loads(response.read().decode())
-                remote_commit = data.get("sha")
+                    req = urllib.request.Request(
+                        update_base_url,
+                        headers={"User-Agent": "WeChat-Bridge-Updater"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        data = json.loads(response.read().decode())
+                        remote_commit = data.get("sha")
 
-                if local_commit and remote_commit:
-                    if local_commit != remote_commit:
-                        logger.warning("🎉 【发现新版本】当前运行的版本较旧！")
-                        logger.warning("👉 更新方式 1 (推荐): 在项目目录下运行 'git pull' 后重启服务")
-                        logger.warning("👉 更新方式 2 (一键): 重新运行 Windows PowerShell 一键安装命令")
-                        logger.warning("👉 更新方式 3 (Docker): 运行 'docker compose pull && docker compose up -d'")
-                        logger.warning("查看更新日志: https://github.com/yuuouu/WeChat-Bridge/commits/main")
-                    else:
-                        logger.info("✅ 更新检查: 当前已是最新版本")
-                else:
-                    logger.info("✅ 更新检查: 最新远程版本为 %s", remote_commit[:7] if remote_commit else "未知")
-        except Exception as e:
-            logger.debug("检测更新失败: %s", e)
+                        if local_commit and remote_commit:
+                            if local_commit != remote_commit:
+                                logger.warning("🎉 【发现新版本】当前运行的版本较旧！")
+                                logger.warning("👉 更新方式 1 (推荐): 在项目目录下运行 'git pull' 后重启服务")
+                                logger.warning("👉 更新方式 2 (一键): 重新运行 Windows PowerShell 一键安装命令")
+                                logger.warning("👉 更新方式 3 (Docker): 运行 'docker compose pull && docker compose up -d'")
+                                logger.warning("查看更新日志: https://github.com/yuuouu/WeChat-Bridge/commits/main")
+                            else:
+                                logger.info("✅ 更新检查: 当前已是最新版本")
+                        else:
+                            logger.info("✅ 更新检查: 最新远程版本为 %s", remote_commit[:7] if remote_commit else "未知")
+                except Exception as e:
+                    logger.debug("检测更新失败: %s", e)
 
-        # ── 可选匿名遥测（默认关闭，Web 设置或 TELEMETRY_ENABLED=1 启用）──
-        telemetry_on = os.environ.get("TELEMETRY_ENABLED", "").lower() in ("1", "true")
-        if not telemetry_on:
-            telemetry_on = bool(runtime_cfg.get("telemetry_enabled"))
-        if not telemetry_on:
-            return
-        try:
-            import json
-            import platform
-            import urllib.request
+            # ── 可选匿名遥测（默认开启，Web 设置或 TELEMETRY_ENABLED=1 启用）──
+            current_cfg = cfg.load_config()
+            telemetry_on = os.environ.get("TELEMETRY_ENABLED", "").lower() in ("1", "true")
+            if not telemetry_on:
+                telemetry_on = bool(current_cfg.get("telemetry_enabled"))
 
-            payload = json.dumps(
-                {
-                    "v": __version__,
-                    "os": platform.system().lower(),
-                    "arch": platform.machine(),
-                    "py": f"{sys.version_info.major}.{sys.version_info.minor}",
-                    "mode": "docker" if os.path.exists("/.dockerenv") else "native",
-                }
-            ).encode()
-            req = urllib.request.Request(
-                f"{update_base_url}/telemetry",
-                data=payload,
-                headers={"Content-Type": "application/json", "User-Agent": "WeChat-Bridge-Updater"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=5)
-            logger.debug("📊 匿名遥测已发送")
-        except Exception:
-            pass  # 静默失败，绝不影响主流程
+            if telemetry_on:
+                try:
+                    import json
+                    import platform
+                    import urllib.request
+
+                    # 计算运行天数
+                    uptime_days = int((_time.time() - start_time) / 86400)
+
+                    # 账号数量
+                    try:
+                        accounts_count = len(db.list_bot_accounts())
+                    except Exception:
+                        accounts_count = 0
+
+                    # AI 提供商
+                    ai_provider = current_cfg.get("provider") if current_cfg.get("enabled") else "none"
+
+                    # 插件数量
+                    plugins_count = 0
+                    try:
+                        if account_manager is not None:
+                            runtimes = account_manager.runtimes
+                            if runtimes:
+                                first_runtime = next(iter(runtimes.values()))
+                                if hasattr(first_runtime, "bridge") and hasattr(first_runtime.bridge, "plugin_registry"):
+                                    plugins_count = len(first_runtime.bridge.plugin_registry.plugins)
+                    except Exception:
+                        pass
+
+                    # Webhook 状态
+                    webhook_enabled = "true" if (bool(current_cfg.get("webhook_enabled")) and current_cfg.get("webhook_url")) else "false"
+
+                    # 功能列表
+                    features = []
+                    if current_cfg.get("enabled"):
+                        features.append("ai")
+                    if bool(current_cfg.get("webhook_enabled")) and current_cfg.get("webhook_url"):
+                        features.append("webhook")
+                    if plugins_count > 0:
+                        features.append("plugins")
+                    if accounts_count > 1:
+                        features.append("multi_account")
+                    if os.path.exists("/.dockerenv"):
+                        features.append("docker")
+
+                    payload = json.dumps(
+                        {
+                            "v": __version__,
+                            "os": platform.system().lower(),
+                            "arch": platform.machine(),
+                            "py": f"{sys.version_info.major}.{sys.version_info.minor}",
+                            "mode": "docker" if os.path.exists("/.dockerenv") else "native",
+                            "uptime_days": str(uptime_days),
+                            "accounts": str(accounts_count),
+                            "ai_provider": str(ai_provider),
+                            "plugins_count": str(plugins_count),
+                            "webhook_enabled": webhook_enabled,
+                            "features": features,
+                        }
+                    ).encode()
+
+                    req = urllib.request.Request(
+                        f"{update_base_url}/telemetry",
+                        data=payload,
+                        headers={"Content-Type": "application/json", "User-Agent": "WeChat-Bridge-Updater"},
+                        method="POST",
+                    )
+                    urllib.request.urlopen(req, timeout=5)
+                    logger.debug("📊 匿名遥测已发送: %s", payload.decode())
+                except Exception as e:
+                    logger.debug("发送遥测失败: %s", e)
+
+            # 每 24 小时检查一次
+            _time.sleep(86400)
 
     import threading
 

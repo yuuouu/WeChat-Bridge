@@ -49,6 +49,10 @@ class _FakeBridge:
         self._running = True
         self.ag_inbox = []
         self.sent = []
+        self.sent_video_paths = []
+        self.sent_voices = []
+        self.sent_files = []
+        self.sent_references = []
         self.default_recipient_decisions = []
         self.ai_manager = None
         self.recent_messages = ["stale-message"]
@@ -60,6 +64,22 @@ class _FakeBridge:
     def send(self, to, text, source="api", title=""):
         self.sent.append((to, text, source, title))
         return {"ok": True, "result": {"to": to, "text": text}}
+
+    def send_video_path(self, to, filepath, play_length=0):
+        self.sent_video_paths.append((to, Path(filepath).read_bytes(), play_length, Path(filepath).exists()))
+        return {"ok": True, "result": {"to": to, "size": Path(filepath).stat().st_size, "play_length": play_length}}
+
+    def send_voice(self, to, file_data, playtime_ms=0, text=""):
+        self.sent_voices.append((to, file_data, playtime_ms, text))
+        return {"ok": True, "result": {"to": to, "size": len(file_data), "playtime_ms": playtime_ms}}
+
+    def send_file(self, to, file_data, file_name="file.bin", text=""):
+        self.sent_files.append((to, file_data, file_name, text))
+        return {"ok": True, "result": {"to": to, "size": len(file_data), "file_name": file_name}}
+
+    def send_reference_text(self, to, text, ref_text="", ref_title=""):
+        self.sent_references.append((to, text, ref_text, ref_title))
+        return {"ok": True, "result": {"to": to, "text": text}, "native_reference": False, "fallback": "text_quote"}
 
     def get_runtime_status(self):
         return {
@@ -635,6 +655,124 @@ class WebAppServerTests(unittest.TestCase):
         self.assertTrue(self.bridge.load_contacts_called)
         self.assertEqual(self.bridge.recent_messages, [])
         self.assertEqual(self.bridge._consecutive_send_count, {})
+
+    def test_send_video_route_uses_video_path_sender(self):
+        boundary = "----video-boundary"
+        video_bytes = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="to"\r\n\r\n'
+            "Alice\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="video"; filename="a.mp4"\r\n'
+            "Content-Type: video/mp4\r\n\r\n"
+        ).encode() + video_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+        status, _, resp_body = self._request(
+            "/api/send_video?play_length=3",
+            method="POST",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, resp_body)
+        self.assertEqual(len(self.bridge.sent_video_paths), 1)
+        to, data, play_length, existed_during_call = self.bridge.sent_video_paths[0]
+        self.assertEqual(to, "Alice")
+        self.assertEqual(data, video_bytes)
+        self.assertEqual(play_length, 3)
+        self.assertTrue(existed_during_call)
+
+    def test_send_voice_route_sends_voice_bytes(self):
+        boundary = "----voice-boundary"
+        voice_bytes = b"\x02#!SILK_V3.\x00" + b"\x00" * 128
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="to"\r\n\r\n'
+            "Alice\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="voice"; filename="a.silk"\r\n'
+            "Content-Type: audio/silk\r\n\r\n"
+        ).encode() + voice_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+        status, _, resp_body = self._request(
+            "/api/send_voice?playtime_ms=1000",
+            method="POST",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, resp_body)
+        self.assertEqual(self.bridge.sent_voices, [("Alice", voice_bytes, 1000, "")])
+
+    def test_send_voice_route_rejects_non_silk_audio(self):
+        boundary = "----voice-boundary-reject"
+        voice_bytes = b"#!AMR\n" + b"\x00" * 128
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="to"\r\n\r\n'
+            "Alice\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="voice"; filename="a.amr"\r\n'
+            "Content-Type: audio/amr\r\n\r\n"
+        ).encode() + voice_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+        status, _, resp_body = self._request(
+            "/api/send_voice?playtime_ms=1000",
+            method="POST",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 400, resp_body)
+        self.assertIn("SILK", resp_body)
+        self.assertEqual(self.bridge.sent_voices, [])
+
+    def test_send_file_route_sends_file_bytes_with_filename(self):
+        boundary = "----file-boundary"
+        file_bytes = b"hello file"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="to"\r\n\r\n'
+            "Alice\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="text"\r\n\r\n'
+            "附件说明\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="report.txt"\r\n'
+            "Content-Type: text/plain\r\n\r\n"
+        ).encode() + file_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+        status, _, resp_body = self._request(
+            "/api/send_file",
+            method="POST",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, resp_body)
+        self.assertEqual(self.bridge.sent_files, [("Alice", file_bytes, "report.txt", "附件说明")])
+
+    def test_send_reference_route_sends_reference_text(self):
+        payload = {
+            "to": "Alice",
+            "text": "这是回复",
+            "ref_title": "原消息",
+            "ref_text": "被引用内容",
+        }
+
+        status, _, resp_body = self._request(
+            "/api/send_reference",
+            method="POST",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, resp_body)
+        response = json.loads(resp_body)
+        self.assertFalse(response["native_reference"])
+        self.assertEqual(response["fallback"], "text_quote")
+        self.assertEqual(self.bridge.sent_references, [("Alice", "这是回复", "被引用内容", "原消息")])
 
 
 class MultiAccountWebAppServerTests(unittest.TestCase):

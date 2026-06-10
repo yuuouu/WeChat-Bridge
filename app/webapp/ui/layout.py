@@ -367,6 +367,56 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     display: block;
     background: #000;
   }
+  .msg-bubble audio.chat-audio {
+    width: min(280px, 100%%);
+    margin: 6px 0 2px;
+    display: block;
+  }
+  .msg-bubble .media-hint {
+    font-size: 12px;
+    opacity: 0.78;
+    margin-top: 4px;
+  }
+  .msg-bubble .chat-file {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: min(320px, 100%%);
+    padding: 10px 12px;
+    margin: 6px 0 2px;
+    border-radius: 10px;
+    color: inherit;
+    text-decoration: none;
+    background: rgba(255,255,255,0.14);
+    border: 1px solid rgba(255,255,255,0.22);
+  }
+  .msg-bubble .chat-file span {
+    flex: 0 0 auto;
+    font-size: 12px;
+    opacity: 0.82;
+  }
+  .msg-bubble .chat-file strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 700;
+  }
+  .msg-bubble .quote-block {
+    padding: 8px 10px;
+    margin: 0 0 8px;
+    border-left: 3px solid rgba(255,255,255,0.48);
+    border-radius: 8px;
+    background: rgba(0,0,0,0.12);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .msg-bubble .quote-block span {
+    display: block;
+    margin-bottom: 2px;
+    font-size: 11px;
+    opacity: 0.7;
+  }
   /* 图片/视频全屏预览 */
   .img-lightbox {
     display: none;
@@ -822,7 +872,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .msg.send { width: 88%%; }
     .msg.send .msg-bubble { width: 100%%; }
     .msg-bubble { padding: 10px 12px; font-size: 13px; line-height: 1.55; word-break: normal; overflow-wrap: anywhere; }
-    .msg-bubble img.chat-img, .msg-bubble video.chat-video { max-width: 100%%; height: auto; }
+    .msg-bubble img.chat-img, .msg-bubble video.chat-video, .msg-bubble audio.chat-audio { max-width: 100%%; height: auto; }
     .chat-input-area {
       padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
       gap: 8px;

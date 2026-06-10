@@ -554,6 +554,52 @@ class MediaProtocolTests(unittest.TestCase):
         self.assertEqual(cdn_call.kwargs["headers"]["Content-Type"], "application/octet-stream")
         self.assertNotIn("json", cdn_call.kwargs)
 
+    def test_upload_media_accepts_upload_full_url_without_upload_param(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+
+        upload_url_resp = MagicMock()
+        upload_url_resp.json.return_value = {
+            "ret": 0,
+            "upload_full_url": "https://cdn.example.com/upload-full",
+        }
+        upload_url_resp.raise_for_status = MagicMock()
+        cdn_resp = MagicMock()
+        cdn_resp.headers = {"X-Encrypted-Param": "download-ref"}
+        cdn_resp.raise_for_status = MagicMock()
+
+        with patch.object(client._session, "post", side_effect=[upload_url_resp, cdn_resp]) as mock_post:
+            result = client.upload_media(b"video-bytes", media_type=ilink.UPLOAD_MEDIA_TYPE_VIDEO)
+
+        self.assertEqual(result["encrypt_query_param"], "download-ref")
+        self.assertEqual(mock_post.call_args_list[1].args[0], "https://cdn.example.com/upload-full")
+
+    def test_upload_media_path_streams_encrypted_file_to_cdn(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+        media_path = Path(self.tempdir.name) / "video.mp4"
+        media_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 128)
+
+        upload_url_resp = MagicMock()
+        upload_url_resp.json.return_value = {
+            "ret": 0,
+            "upload_full_url": "https://cdn.example.com/upload-path",
+        }
+        upload_url_resp.raise_for_status = MagicMock()
+        cdn_resp = MagicMock()
+        cdn_resp.headers = {"X-Encrypted-Param": "download-ref"}
+        cdn_resp.raise_for_status = MagicMock()
+
+        with patch.object(client._session, "post", side_effect=[upload_url_resp, cdn_resp]) as mock_post:
+            result = client.upload_media_path(str(media_path), media_type=ilink.UPLOAD_MEDIA_TYPE_VIDEO)
+
+        self.assertEqual(result["encrypt_query_param"], "download-ref")
+        getupload_call, cdn_call = mock_post.call_args_list
+        self.assertEqual(getupload_call.kwargs["json"]["media_type"], ilink.UPLOAD_MEDIA_TYPE_VIDEO)
+        self.assertEqual(getupload_call.kwargs["json"]["rawsize"], media_path.stat().st_size)
+        self.assertTrue(hasattr(cdn_call.kwargs["data"], "read"))
+        self.assertFalse(list(Path(self.tempdir.name).glob(".wb_upload_*.enc")))
+
     def test_send_image_uses_upload_image_type_and_message_image_item_type(self):
         client = ilink.ILinkClient()
         client.bot_token = "test-token"
@@ -582,6 +628,162 @@ class MediaProtocolTests(unittest.TestCase):
         image_item = payload["msg"]["item_list"][0]
         self.assertEqual(image_item["type"], ilink.MESSAGE_ITEM_TYPE_IMAGE)
         self.assertEqual(payload["base_info"], {"channel_version": "2.1.7"})
+
+    def test_send_video_uses_upload_video_type_and_message_video_item_type(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+
+        send_resp = MagicMock()
+        send_resp.json.return_value = {"ret": 0, "errcode": 0}
+        send_resp.raise_for_status = MagicMock()
+        upload_result = {
+            "encrypt_query_param": "download-ref",
+            "aes_key_b64": "aes-b64",
+            "aes_key_hex": "aes-hex",
+            "encrypted_size": 456,
+        }
+
+        with (
+            patch.object(client, "upload_media", return_value=upload_result) as mock_upload,
+            patch.object(client._session, "post", return_value=send_resp) as mock_post,
+        ):
+            result = client.send_video("user@im.wechat", b"video-bytes", "ctx-token", play_length=15)
+
+        self.assertEqual(result["ret"], 0)
+        mock_upload.assert_called_once_with(
+            b"video-bytes", media_type=ilink.UPLOAD_MEDIA_TYPE_VIDEO, to_user_id="user@im.wechat"
+        )
+        payload = mock_post.call_args.kwargs["json"]
+        video_item = payload["msg"]["item_list"][0]
+        self.assertEqual(video_item["type"], ilink.MESSAGE_ITEM_TYPE_VIDEO)
+        self.assertEqual(video_item["video_item"]["media"]["encrypt_query_param"], "download-ref")
+        self.assertEqual(video_item["video_item"]["video_size"], 456)
+        self.assertEqual(video_item["video_item"]["play_length"], 15)
+        self.assertEqual(payload["base_info"], {"channel_version": "2.1.7"})
+
+    def test_send_video_path_uses_upload_video_type_and_message_video_item_type(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+        media_path = Path(self.tempdir.name) / "video.mp4"
+        media_path.write_bytes(b"video-path-bytes")
+
+        send_resp = MagicMock()
+        send_resp.json.return_value = {"ret": 0, "errcode": 0}
+        send_resp.raise_for_status = MagicMock()
+        upload_result = {
+            "encrypt_query_param": "download-ref",
+            "aes_key_b64": "aes-b64",
+            "aes_key_hex": "aes-hex",
+            "encrypted_size": 789,
+            "file_size": media_path.stat().st_size,
+        }
+
+        with (
+            patch.object(client, "upload_media_path", return_value=upload_result) as mock_upload,
+            patch.object(client._session, "post", return_value=send_resp) as mock_post,
+        ):
+            result = client.send_video_path("user@im.wechat", str(media_path), "ctx-token", play_length=9)
+
+        self.assertEqual(result["ret"], 0)
+        mock_upload.assert_called_once_with(
+            str(media_path), media_type=ilink.UPLOAD_MEDIA_TYPE_VIDEO, to_user_id="user@im.wechat"
+        )
+        payload = mock_post.call_args.kwargs["json"]
+        video_item = payload["msg"]["item_list"][0]
+        self.assertEqual(video_item["type"], ilink.MESSAGE_ITEM_TYPE_VIDEO)
+        self.assertEqual(video_item["video_item"]["video_size"], 789)
+        self.assertEqual(video_item["video_item"]["play_length"], 9)
+
+    def test_send_voice_uses_upload_voice_type_and_message_voice_item_type(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+
+        send_resp = MagicMock()
+        send_resp.json.return_value = {"ret": 0, "errcode": 0}
+        send_resp.raise_for_status = MagicMock()
+        upload_result = {
+            "encrypt_query_param": "download-ref",
+            "aes_key_b64": "aes-b64",
+            "aes_key_hex": "aes-hex",
+            "encrypted_size": 111,
+            "file_size": 100,
+        }
+
+        with (
+            patch.object(client, "upload_media", return_value=upload_result) as mock_upload,
+            patch.object(client._session, "post", return_value=send_resp) as mock_post,
+        ):
+            result = client.send_voice("user@im.wechat", b"voice-bytes", "ctx-token", playtime_ms=1000)
+
+        self.assertEqual(result["ret"], 0)
+        mock_upload.assert_called_once_with(
+            b"voice-bytes", media_type=ilink.UPLOAD_MEDIA_TYPE_VOICE, to_user_id="user@im.wechat"
+        )
+        payload = mock_post.call_args.kwargs["json"]
+        voice_item = payload["msg"]["item_list"][0]
+        self.assertEqual(voice_item["type"], ilink.MESSAGE_ITEM_TYPE_VOICE)
+        self.assertEqual(voice_item["voice_item"]["media"]["encrypt_query_param"], "download-ref")
+        self.assertEqual(voice_item["voice_item"]["playtime"], 1000)
+        self.assertEqual(voice_item["voice_item"]["sample_rate"], 8000)
+
+    def test_send_file_uses_upload_file_type_and_message_file_item_type(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+
+        send_resp = MagicMock()
+        send_resp.json.return_value = {"ret": 0, "errcode": 0}
+        send_resp.raise_for_status = MagicMock()
+        upload_result = {
+            "encrypt_query_param": "download-ref",
+            "aes_key_b64": "aes-b64",
+            "aes_key_hex": "aes-hex",
+            "encrypted_size": 128,
+            "file_size": 123,
+        }
+
+        with (
+            patch.object(client, "upload_media", return_value=upload_result) as mock_upload,
+            patch.object(client._session, "post", return_value=send_resp) as mock_post,
+        ):
+            result = client.send_file("user@im.wechat", b"file-bytes", "ctx-token", file_name="report.txt", text="附件说明")
+
+        self.assertEqual(result["ret"], 0)
+        mock_upload.assert_called_once_with(
+            b"file-bytes", media_type=ilink.UPLOAD_MEDIA_TYPE_FILE, to_user_id="user@im.wechat"
+        )
+        payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
+        self.assertEqual(payloads[0]["msg"]["item_list"][0]["type"], ilink.MESSAGE_ITEM_TYPE_TEXT)
+        file_item = payloads[1]["msg"]["item_list"][0]
+        self.assertEqual(file_item["type"], ilink.MESSAGE_ITEM_TYPE_FILE)
+        self.assertEqual(file_item["file_item"]["media"]["encrypt_query_param"], "download-ref")
+        self.assertEqual(file_item["file_item"]["file_name"], "report.txt")
+        self.assertEqual(file_item["file_item"]["len"], "123")
+
+    def test_send_reference_text_uses_text_quote_fallback(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+
+        send_resp = MagicMock()
+        send_resp.json.return_value = {"ret": 0, "errcode": 0}
+        send_resp.raise_for_status = MagicMock()
+
+        with patch.object(client._session, "post", return_value=send_resp) as mock_post:
+            result = client.send_reference_text(
+                "user@im.wechat",
+                "这是回复",
+                "ctx-token",
+                ref_title="原消息",
+                ref_text="被引用内容",
+            )
+
+        self.assertEqual(result["ret"], 0)
+        self.assertFalse(result["native_reference"])
+        self.assertEqual(result["fallback"], "text_quote")
+        payload = mock_post.call_args.kwargs["json"]
+        item = payload["msg"]["item_list"][0]
+        self.assertEqual(item["type"], ilink.MESSAGE_ITEM_TYPE_TEXT)
+        self.assertEqual(item["text_item"]["text"], "[引用:原消息 | 被引用内容]\n这是回复")
+        self.assertNotIn("ref_msg", item)
 
 
 if __name__ == "__main__":

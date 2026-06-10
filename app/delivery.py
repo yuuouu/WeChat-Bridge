@@ -170,6 +170,8 @@ class DeliveryMixin:
                 break
             try:
                 self.cleanup_expired_pending_messages(force=True)
+                if hasattr(self, "cleanup_expired_media_files"):
+                    self.cleanup_expired_media_files(force=False)
             except Exception as exc:
                 logger.warning("过期缓存清理失败: %s", exc)
 
@@ -328,6 +330,7 @@ class DeliveryMixin:
         return {
             "ok": True,
             "buffered": True,
+            "blocked_reason": reason,
             "overflow_session_id": session["id"],
             "message": f"消息已进入缓存队列（{reason_text}），用户回复后发送 /pull 可继续拉取。",
         }
@@ -398,6 +401,7 @@ class DeliveryMixin:
                         source=source,
                         title=title,
                         media_name=media_name,
+                        extra_meta=extra_meta,
                     )
                 from datetime import datetime
 
@@ -414,6 +418,7 @@ class DeliveryMixin:
                         source=source,
                         title=title,
                         media_name=media_name,
+                        extra_meta=extra_meta,
                     )
                 return {"ok": False, "error": "已超过 24 小时未收到用户消息，请等待对方回复后再继续发送。"}
 
@@ -430,6 +435,7 @@ class DeliveryMixin:
                         source=source,
                         title=title,
                         media_name=media_name,
+                        extra_meta=extra_meta,
                     )
                 return {"ok": False, "error": "已连续发送 10 条消息，请等待用户回复后发送 /pull 拉取缓存消息。"}
 
@@ -472,7 +478,11 @@ class DeliveryMixin:
                         source=source,
                         title=title,
                         media_name=media_name,
-                        extra_meta={"limit_warning": True} if warning_appended else None,
+                        extra_meta={
+                            **(extra_meta or {}),
+                            **({"limit_warning": True} if warning_appended else {}),
+                        }
+                        or None,
                     )
                 if self._is_delivery_uncertain_error(exc):
                     resolved_meta = dict(extra_meta or {})
