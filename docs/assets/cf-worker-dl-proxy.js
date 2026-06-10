@@ -46,9 +46,11 @@ export default {
       });
     }
 
-    // ── /stats ── 统计面板（需 ?token=yuu）
+    // ── /stats ── 统计面板
+    // Token 通过 CF Dashboard → wb Worker → 设置 → 变量和机密 → STATS_TOKEN 配置
     if (path === '/stats') {
-      if (url.searchParams.get('token') !== 'yuu') {
+      const statsToken = env.STATS_TOKEN || 'yuu';
+      if (url.searchParams.get('token') !== statsToken) {
         return new Response('Forbidden', { status: 403 });
       }
       return handleStats(env);
@@ -56,52 +58,12 @@ export default {
 
     // ── /install.sh ── 安装脚本代理
     if (path === '/install.sh') {
-      await bump(env, 'dl:install:sh');
-      const resp = await fetch(`${GITHUB_RAW}/scripts/install.sh`, {
-        headers: { 'User-Agent': 'WB-Proxy' },
-      });
-      if (!resp.ok) return new Response('fetch failed', { status: resp.status });
-      let script = await resp.text();
-      script = script.replace(
-        /https:\/\/raw\.githubusercontent\.com\/yuuouu\/WeChat-Bridge\/main\/scripts\/install\.sh/g,
-        url.origin + '/install.sh'
-      );
-      script = script.replace(
-        `https://github.com/${REPO}/archive/refs/heads/main.tar.gz`,
-        url.origin + '/archive/main.tar.gz'
-      );
-      return new Response(script, {
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'public, max-age=300',
-          'Access-Control-Allow-Origin': '*',
-        },
-      });
+      return proxyInstallScript(env, url, 'sh');
     }
 
     // ── /install.ps1 ── Windows 安装脚本代理
     if (path === '/install.ps1') {
-      await bump(env, 'dl:install:ps1');
-      const resp = await fetch(`${GITHUB_RAW}/scripts/install.ps1`, {
-        headers: { 'User-Agent': 'WB-Proxy' },
-      });
-      if (!resp.ok) return new Response('fetch failed', { status: resp.status });
-      let script = await resp.text();
-      script = script.replace(
-        /https:\/\/raw\.githubusercontent\.com\/yuuouu\/WeChat-Bridge\/main\/scripts\/install\.ps1/g,
-        url.origin + '/install.ps1'
-      );
-      script = script.replace(
-        `https://github.com/${REPO}/archive/refs/heads/main.zip`,
-        url.origin + '/archive/main.zip'
-      );
-      return new Response(script, {
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'public, max-age=300',
-          'Access-Control-Allow-Origin': '*',
-        },
-      });
+      return proxyInstallScript(env, url, 'ps1');
     }
 
     // ── /archive/main.tar.gz ── 源码包代理（24h 边缘缓存）
@@ -168,13 +130,14 @@ export default {
 
 // ── 匿名遥测处理 ──
 // 仅接受白名单字段，丢弃一切未知数据
+// Key 格式: ts:<field>:<value>（全量累计，不按天拆分，大幅减少 /stats 的 KV 读操作）
+// 注：旧 t:<field>:<value>:<date> 格式的 Key 会在 180 天后自动过期
 const ALLOWED_FIELDS = ['v', 'prev_v', 'os', 'arch', 'py', 'mode', 'features'];
 
 async function handleTelemetry(request, env) {
   if (!env.COUNTER) return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
   try {
     const data = await request.json();
-    const today = new Date().toISOString().slice(0, 10);
 
     // 只处理白名单字段，按维度聚合计数
     for (const field of ALLOWED_FIELDS) {
@@ -186,13 +149,40 @@ async function handleTelemetry(request, env) {
         // 防注入：只允许字母数字和少量安全字符
         const safe = String(v).replace(/[^a-zA-Z0-9._\-\/]/g, '').slice(0, 30);
         if (!safe) continue;
-        const key = `t:${field}:${safe}:${today}`;
+        const key = `ts:${field}:${safe}`;
         const cur = parseInt(await env.COUNTER.get(key) || '0');
         await env.COUNTER.put(key, String(cur + 1), { expirationTtl: 180 * 86400 });
       }
     }
   } catch (e) {}
   return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
+}
+
+// ── 安装脚本代理（5 分钟上游边缘缓存）──
+async function proxyInstallScript(env, url, ext) {
+  await bump(env, `dl:install:${ext}`);
+  const resp = await fetch(`${GITHUB_RAW}/scripts/install.${ext}`, {
+    headers: { 'User-Agent': 'WB-Proxy' },
+    cf: { cacheTtl: 300 },
+  });
+  if (!resp.ok) return new Response('fetch failed', { status: resp.status });
+  let script = await resp.text();
+  script = script.replaceAll(
+    `https://raw.githubusercontent.com/${REPO}/main/scripts/install.${ext}`,
+    url.origin + `/install.${ext}`
+  );
+  const archiveName = ext === 'ps1' ? 'main.zip' : 'main.tar.gz';
+  script = script.replaceAll(
+    `https://github.com/${REPO}/archive/refs/heads/${archiveName}`,
+    url.origin + `/archive/${archiveName}`
+  );
+  return new Response(script, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'public, max-age=300',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
 }
 
 // ── 源码包 24h 边缘缓存 ──
@@ -263,13 +253,13 @@ async function handleStats(env) {
     };
   }
 
-  // 读取 telemetry 维度分布（累计，键自动 180 天过期）
+  // 读取 telemetry 维度分布（累计，ts:<field>:<value> 格式，Key 总量 ≈ 字段×枚举值 ≈ 20）
   const telemetry = {};
   try {
-    const { keys } = await env.COUNTER.list({ prefix: 't:' });
+    const { keys } = await env.COUNTER.list({ prefix: 'ts:' });
     for (const { name } of keys) {
       const parts = name.split(':');
-      if (parts.length < 4) continue;
+      if (parts.length < 3) continue;
       const field = parts[1];
       const value = parts[2];
       const count = parseInt(await env.COUNTER.get(name) || '0');
@@ -288,5 +278,5 @@ async function handleStats(env) {
     },
     daily,
     telemetry,
-  }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+  }, null, 2), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private, max-age=60' } });
 }

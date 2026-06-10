@@ -25,9 +25,9 @@ sequenceDiagram
     participant Bridge as WeChat Bridge
     participant Biz as 你的业务服务
 
-    User->>Bridge: /weather shanghai
+    User->>Bridge: /天气 上海
     Bridge-->>Biz: POST /webhook
-    Note over Bridge,Biz: payload 含 command=/weather args=shanghai
+    Note over Bridge,Biz: payload 含 command=/天气 args=上海
     Biz->>Biz: 查询天气 / 执行业务逻辑
     Biz->>Bridge: POST /api/send
     Bridge-->>User: 天气结果
@@ -66,13 +66,13 @@ WEBHOOK_TIMEOUT=5
   "source": "wechat-bridge",
   "from_user": "o9cq80xxxx@im.wechat",
   "from_name": "张三",
-  "text": "/weather shanghai",
+  "text": "/天气 上海",
   "msg_id": "123456",
   "timestamp": 1712345678,
   "msg_type": 1,
   "is_command": true,
-  "command": "/weather",
-  "args": "shanghai"
+  "command": "/天气",
+  "args": "上海"
 }
 ```
 
@@ -81,8 +81,8 @@ WEBHOOK_TIMEOUT=5
 - `from_user`：回写时最关键，后续需要把它作为 `/api/send` 的 `to`
 - `text`：原始消息文本
 - `is_command`：是否由命令触发
-- `command`：命令名，例如 `/weather`
-- `args`：命令参数，例如 `shanghai`
+- `command`：命令名，例如 `/天气`
+- `args`：命令参数，例如 `上海`
 
 ---
 
@@ -111,7 +111,7 @@ curl -X POST http://192.168.100.1:5200/api/send \
 | 示例 | 文件 | Webhook 模式 | 场景 |
 |-----|------|:---:|------|
 | **会话式便签收集器** | [`session_notes.py`](../examples/session_notes.py) | 内置插件路由 | `/note` 开始 → 收集文字 → `/exit` 汇总 |
-| **无状态命令响应** | [`webhook_receiver.py`](../examples/webhook_receiver.py) | `unknown_command` | 一问一答：`/weather`、`/echo` |
+| **无状态命令响应** | [`webhook_receiver.py`](../examples/webhook_receiver.py) | `unknown_command` | 一问一答：`/天气`、`/echo` |
 
 ---
 
@@ -144,7 +144,7 @@ curl -X POST http://192.168.100.1:5200/api/send \
 推荐先把模式设成 `仅未知命令`，然后发：
 
 ```text
-/weather shanghai
+/天气 上海
 ```
 
 这样不会影响 `/help`、`/status` 等现有内置命令。

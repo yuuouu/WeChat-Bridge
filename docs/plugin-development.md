@@ -53,7 +53,7 @@ PLUGIN_CLASS = EchoPlugin
 | `from_user` | 发送者 user_id |
 | `from_name` | 联系人名称 |
 | `text` | 原始文本 |
-| `command` | 命令名，例如 `/weather` |
+| `command` | 命令名，例如 `/天气` |
 | `args` | 命令参数 |
 | `bot_id` | 当前 Bot 标识 |
 

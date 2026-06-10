@@ -294,8 +294,8 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 ## 隐私与数据收集
 
 - **默认统计**：安装脚本和版本检查通过 Cloudflare Worker 中转，只记录每日安装 / 启动次数的聚合计数
-- **可选遥测**：默认关闭，可在 Web UI 的“匿名使用统计”中开启或关闭
-- **遥测字段**：`v` 版本、`os` 操作系统、`arch` CPU 架构、`py` Python 版本、`mode` 部署方式
+- **可选遥测**：默认开启，可在 Web UI 的“匿名使用统计”中开启或关闭
+- **遥测字段**：`v` 版本、`os` 操作系统、`arch` CPU 架构、`py` Python 版本、`mode` 部署方式、`uptime_days` 运行天数、`accounts` 绑定账号数、`ai_provider` AI 提供商、`plugins_count` 插件数、`webhook_enabled` Webhook 状态、`features` 启用功能
 - **不会收集**：微信消息内容、联系人、登录凭证、`API_TOKEN`、AI API Key
 - **保留周期**：数据 180 天后自动过期，Worker 源码见 [docs/assets/cf-worker-dl-proxy.js](docs/assets/cf-worker-dl-proxy.js)
 - **完全关闭版本检查**：部署时设置环境变量 `DISABLE_UPDATE_CHECK=1`，可连启动时版本检查一起禁用
