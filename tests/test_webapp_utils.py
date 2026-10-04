@@ -84,13 +84,17 @@ class WebAppUtilsTests(unittest.TestCase):
         for field_name, expected in (("video", b"MP4DATA"), ("voice", b"AMRDATA")):
             boundary = f"----boundary-{field_name}"
             body = (
-                f"--{boundary}\r\n"
-                'Content-Disposition: form-data; name="to"\r\n\r\n'
-                "Alice\r\n"
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="{field_name}"; filename="a.bin"\r\n'
-                "Content-Type: application/octet-stream\r\n\r\n"
-            ).encode() + expected + f"\r\n--{boundary}--\r\n".encode()
+                (
+                    f"--{boundary}\r\n"
+                    'Content-Disposition: form-data; name="to"\r\n\r\n'
+                    "Alice\r\n"
+                    f"--{boundary}\r\n"
+                    f'Content-Disposition: form-data; name="{field_name}"; filename="a.bin"\r\n'
+                    "Content-Type: application/octet-stream\r\n\r\n"
+                ).encode()
+                + expected
+                + f"\r\n--{boundary}--\r\n".encode()
+            )
 
             to, media_data = parse_multipart(body, f"multipart/form-data; boundary={boundary}")
 

@@ -677,10 +677,14 @@ def get_message_by_msg_id(message_id: str) -> dict | None:
     if not message_id:
         return None
     with _lock:
-        row = _get_conn().execute(
-            "SELECT * FROM messages WHERE msg_id = ? LIMIT 1",
-            (str(message_id),),
-        ).fetchone()
+        row = (
+            _get_conn()
+            .execute(
+                "SELECT * FROM messages WHERE msg_id = ? LIMIT 1",
+                (str(message_id),),
+            )
+            .fetchone()
+        )
     return _row_to_message(row) if row else None
 
 

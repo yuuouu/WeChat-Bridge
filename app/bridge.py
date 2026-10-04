@@ -368,7 +368,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
     def _save_outbound_file(self, file_data: bytes, file_name: str = "") -> str:
         media._ensure_media_dir(self._media_dir)
         base_name = os.path.basename(file_name or "file.bin").strip() or "file.bin"
-        safe_name = "".join("_" if ch in '/\\\x00' or ord(ch) < 32 else ch for ch in base_name)[:120]
+        safe_name = "".join("_" if ch in "/\\\x00" or ord(ch) < 32 else ch for ch in base_name)[:120]
         filename = f"out_file_{int(time.time())}_{uuid.uuid4().hex[:8]}_{safe_name or 'file.bin'}"
         save_path = os.path.join(self._media_dir, filename)
         with open(save_path, "wb") as fh:
@@ -381,7 +381,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         if not os.path.isfile(source_path):
             raise FileNotFoundError(f"文件不存在: {source_path}")
         base_name = os.path.basename(file_name or source_path).strip() or "file.bin"
-        safe_name = "".join("_" if ch in '/\\\x00' or ord(ch) < 32 else ch for ch in base_name)[:120]
+        safe_name = "".join("_" if ch in "/\\\x00" or ord(ch) < 32 else ch for ch in base_name)[:120]
         filename = f"out_file_{int(time.time())}_{uuid.uuid4().hex[:8]}_{safe_name or 'file.bin'}"
         save_path = os.path.join(self._media_dir, filename)
         shutil.copyfile(source_path, save_path)

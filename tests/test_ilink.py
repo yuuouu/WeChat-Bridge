@@ -745,7 +745,9 @@ class MediaProtocolTests(unittest.TestCase):
             patch.object(client, "upload_media", return_value=upload_result) as mock_upload,
             patch.object(client._session, "post", return_value=send_resp) as mock_post,
         ):
-            result = client.send_file("user@im.wechat", b"file-bytes", "ctx-token", file_name="report.txt", text="附件说明")
+            result = client.send_file(
+                "user@im.wechat", b"file-bytes", "ctx-token", file_name="report.txt", text="附件说明"
+            )
 
         self.assertEqual(result["ret"], 0)
         mock_upload.assert_called_once_with(

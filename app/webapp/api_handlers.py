@@ -926,7 +926,14 @@ def handle_weather_query_get(handler, ctx, params):
             or _truthy_param(params, "no_cache")
         )
         include_minutely = _bool_value(params.get("include_minutely", [""])[0], None)
-        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city, force_refresh=force_refresh, include_minutely=include_minutely)})
+        handler._json_response(
+            {
+                "ok": True,
+                "weather": _query_weather_snapshot(
+                    city, force_refresh=force_refresh, include_minutely=include_minutely
+                ),
+            }
+        )
     except Exception as exc:
         logger.warning("天气结构化查询失败 [%s]: %s", city, exc)
         handler._json_response(_weather_error_payload(exc), _weather_error_status(exc))
@@ -945,7 +952,14 @@ def handle_weather_query_post(handler, ctx, params, body):
     try:
         force_refresh = any(_bool_value(data.get(name), False) for name in ("force", "refresh", "latest", "no_cache"))
         include_minutely = _bool_value(data.get("include_minutely"), None)
-        handler._json_response({"ok": True, "weather": _query_weather_snapshot(city, force_refresh=force_refresh, include_minutely=include_minutely)})
+        handler._json_response(
+            {
+                "ok": True,
+                "weather": _query_weather_snapshot(
+                    city, force_refresh=force_refresh, include_minutely=include_minutely
+                ),
+            }
+        )
     except Exception as exc:
         logger.warning("天气结构化查询失败 [%s]: %s", city, exc)
         handler._json_response(_weather_error_payload(exc), _weather_error_status(exc))
@@ -1364,7 +1378,9 @@ def handle_send_voice(handler, ctx, params, body):
         handler._json_response({"ok": False, "error": "语音大小不能超过 10MB"}, 400)
         return
     if not media_mod.is_silk(voice_data):
-        handler._json_response({"ok": False, "error": "语音消息只支持 SILK v3 编码（#!SILK_V3），请先转换后上传。"}, 400)
+        handler._json_response(
+            {"ok": False, "error": "语音消息只支持 SILK v3 编码（#!SILK_V3），请先转换后上传。"}, 400
+        )
         return
 
     bridge, resolved_to, routed_bot_id = _split_account_target(ctx, runtime.bridge, to)
@@ -1457,8 +1473,18 @@ def handle_send_reference(handler, ctx, params, body):
         return
 
     text = str(data.get("text") or data.get("content") or params.get("text", [""])[0] or params.get("content", [""])[0])
-    ref_text = str(data.get("ref_text") or data.get("quote_text") or params.get("ref_text", [""])[0] or params.get("quote_text", [""])[0])
-    ref_title = str(data.get("ref_title") or data.get("quote_title") or params.get("ref_title", [""])[0] or params.get("quote_title", [""])[0])
+    ref_text = str(
+        data.get("ref_text")
+        or data.get("quote_text")
+        or params.get("ref_text", [""])[0]
+        or params.get("quote_text", [""])[0]
+    )
+    ref_title = str(
+        data.get("ref_title")
+        or data.get("quote_title")
+        or params.get("ref_title", [""])[0]
+        or params.get("quote_title", [""])[0]
+    )
     to = _pick_default_contact(
         runtime.bridge,
         str(data.get("to") or params.get("to", [""])[0]),

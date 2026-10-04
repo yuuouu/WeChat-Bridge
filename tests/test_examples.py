@@ -33,7 +33,7 @@ class WeatherExampleTests(unittest.TestCase):
                     "lat": "22.5455",
                     "lon": "114.0683",
                 }
-            ]
+            ],
         }
         now = {
             "code": "200",
@@ -84,7 +84,7 @@ class WeatherExampleTests(unittest.TestCase):
                     "lat": "22.5455",
                     "lon": "114.0683",
                 }
-            ]
+            ],
         }
         now = {
             "code": "200",
@@ -267,8 +267,22 @@ class WeatherExampleTests(unittest.TestCase):
     def test_weather_open_meteo_ambiguous_city_returns_candidates(self):
         geocode = {
             "results": [
-                {"id": 1, "name": "朝阳", "admin1": "北京市", "country": "中国", "latitude": 39.92, "longitude": 116.43},
-                {"id": 2, "name": "朝阳", "admin1": "辽宁省", "country": "中国", "latitude": 41.57, "longitude": 120.45},
+                {
+                    "id": 1,
+                    "name": "朝阳",
+                    "admin1": "北京市",
+                    "country": "中国",
+                    "latitude": 39.92,
+                    "longitude": 116.43,
+                },
+                {
+                    "id": 2,
+                    "name": "朝阳",
+                    "admin1": "辽宁省",
+                    "country": "中国",
+                    "latitude": 41.57,
+                    "longitude": 120.45,
+                },
             ],
         }
 
@@ -427,7 +441,15 @@ class WeatherExampleTests(unittest.TestCase):
         geocode = {
             "code": "200",
             "location": [
-                {"id": "101280601", "name": "深圳", "adm1": "广东省", "adm2": "深圳市", "country": "中国", "lat": "22.5455", "lon": "114.0683"}
+                {
+                    "id": "101280601",
+                    "name": "深圳",
+                    "adm1": "广东省",
+                    "adm2": "深圳市",
+                    "country": "中国",
+                    "lat": "22.5455",
+                    "lon": "114.0683",
+                }
             ],
         }
         now = {
@@ -466,8 +488,24 @@ class WeatherExampleTests(unittest.TestCase):
         geocode = {
             "code": "200",
             "location": [
-                {"id": "1", "name": "朝阳", "adm1": "北京市", "adm2": "北京市", "country": "中国", "lat": "39.92", "lon": "116.43"},
-                {"id": "2", "name": "朝阳", "adm1": "辽宁省", "adm2": "朝阳市", "country": "中国", "lat": "41.57", "lon": "120.45"},
+                {
+                    "id": "1",
+                    "name": "朝阳",
+                    "adm1": "北京市",
+                    "adm2": "北京市",
+                    "country": "中国",
+                    "lat": "39.92",
+                    "lon": "116.43",
+                },
+                {
+                    "id": "2",
+                    "name": "朝阳",
+                    "adm1": "辽宁省",
+                    "adm2": "朝阳市",
+                    "country": "中国",
+                    "lat": "41.57",
+                    "lon": "120.45",
+                },
             ],
         }
 
@@ -485,7 +523,15 @@ class WeatherExampleTests(unittest.TestCase):
         geocode = {
             "code": "200",
             "location": [
-                {"id": "101280601", "name": "深圳", "adm1": "广东省", "adm2": "深圳市", "country": "中国", "lat": "22.5455", "lon": "114.0683"}
+                {
+                    "id": "101280601",
+                    "name": "深圳",
+                    "adm1": "广东省",
+                    "adm2": "深圳市",
+                    "country": "中国",
+                    "lat": "22.5455",
+                    "lon": "114.0683",
+                }
             ],
         }
         now = {

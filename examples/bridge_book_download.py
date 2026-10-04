@@ -576,7 +576,9 @@ class BookDownloadPlugin(Plugin):
         book = books[index - 1]
         filepath = ""
         try:
-            self.send_reply(from_user, f"## ⏳ 正在下载\n\n- **书名**：{book['title']}\n- **格式**：{book['extension'].upper()}")
+            self.send_reply(
+                from_user, f"## ⏳ 正在下载\n\n- **书名**：{book['title']}\n- **格式**：{book['extension'].upper()}"
+            )
             filepath, size, file_name = download_book(book)
             result = self.bridge.send_file_path(
                 from_user,

@@ -435,7 +435,8 @@ class AccountManager:
         matches = {
             str(account.get("bot_id") or ""): account
             for account in db.list_bot_accounts()
-            if account_ref in {
+            if account_ref
+            in {
                 str(account.get("bot_id") or ""),
                 str(account.get("ilink_user_id") or ""),
             }

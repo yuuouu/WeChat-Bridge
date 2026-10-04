@@ -9,26 +9,18 @@ def bump_version(new_version: str):
 
     # 定义需要更新的文件及对应的正则匹配规则
     files_to_update = [
-        {
-            "path": "app/version.py",
-            "pattern": r'(__version__\s*=\s*")[^"]+(")',
-            "repl": rf'\g<1>{new_version}\g<2>'
-        },
-        {
-            "path": "pyproject.toml",
-            "pattern": r'(version\s*=\s*")[^"]+(")',
-            "repl": rf'\g<1>{new_version}\g<2>'
-        },
+        {"path": "app/version.py", "pattern": r'(__version__\s*=\s*")[^"]+(")', "repl": rf"\g<1>{new_version}\g<2>"},
+        {"path": "pyproject.toml", "pattern": r'(version\s*=\s*")[^"]+(")', "repl": rf"\g<1>{new_version}\g<2>"},
         {
             "path": "openwrt/app-meta-wechat-bridge/Makefile",
-            "pattern": r'(PKG_VERSION:=)[^\s]+',
-            "repl": rf'\g<1>{new_version}'
+            "pattern": r"(PKG_VERSION:=)[^\s]+",
+            "repl": rf"\g<1>{new_version}",
         },
         {
             "path": "openwrt/luci-app-wechat-bridge/Makefile",
-            "pattern": r'(PKG_VERSION:=)[^\s]+',
-            "repl": rf'\g<1>{new_version}'
-        }
+            "pattern": r"(PKG_VERSION:=)[^\s]+",
+            "repl": rf"\g<1>{new_version}",
+        },
     ]
 
     for item in files_to_update:
@@ -45,6 +37,7 @@ def bump_version(new_version: str):
             print(f"✅ 更新成功: {item['path']} -> {new_version}")
         else:
             print(f"⚠️ 未找到匹配项: {item['path']}")
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

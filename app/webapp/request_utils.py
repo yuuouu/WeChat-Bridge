@@ -7,7 +7,7 @@ import urllib.parse
 
 
 def _multipart_header_param(header_text: str, name: str) -> str:
-    star_match = re.search(rf'{name}\*\s*=\s*([^;\r\n]+)', header_text, flags=re.IGNORECASE)
+    star_match = re.search(rf"{name}\*\s*=\s*([^;\r\n]+)", header_text, flags=re.IGNORECASE)
     if star_match:
         value = star_match.group(1).strip().strip('"')
         if "''" in value:

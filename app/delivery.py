@@ -774,11 +774,13 @@ class DeliveryMixin:
 
             if len(block) > PULL_CHUNK_LIMIT:
                 if current_text:
-                    chunks.append({
-                        "text": current_text,
-                        "pending_ids": current_completed_ids[:],
-                        "completed_ids": current_completed_ids[:],
-                    })
+                    chunks.append(
+                        {
+                            "text": current_text,
+                            "pending_ids": current_completed_ids[:],
+                            "completed_ids": current_completed_ids[:],
+                        }
+                    )
                     current_text = ""
                     current_completed_ids = []
 
@@ -799,20 +801,24 @@ class DeliveryMixin:
                 current_completed_ids.append(pending_id)
                 continue
 
-            chunks.append({
-                "text": current_text,
-                "pending_ids": current_completed_ids[:],
-                "completed_ids": current_completed_ids[:],
-            })
+            chunks.append(
+                {
+                    "text": current_text,
+                    "pending_ids": current_completed_ids[:],
+                    "completed_ids": current_completed_ids[:],
+                }
+            )
             current_text = block
             current_completed_ids = [pending_id]
 
         if current_text:
-            chunks.append({
-                "text": current_text,
-                "pending_ids": current_completed_ids[:],
-                "completed_ids": current_completed_ids[:],
-            })
+            chunks.append(
+                {
+                    "text": current_text,
+                    "pending_ids": current_completed_ids[:],
+                    "completed_ids": current_completed_ids[:],
+                }
+            )
         return chunks
 
     def pull_pending_messages(self, user_id: str) -> dict:

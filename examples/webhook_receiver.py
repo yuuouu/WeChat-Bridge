@@ -171,7 +171,9 @@ class ReceiverPlugin(Plugin):
 
         if command == "/天气":
             query = parse_weather_query(args)
-            reply = build_weather_reply(query["city"], force_refresh=query["force_refresh"], include_minutely=query["include_minutely"])
+            reply = build_weather_reply(
+                query["city"], force_refresh=query["force_refresh"], include_minutely=query["include_minutely"]
+            )
         elif command == "/echo":
             reply = f"Echo from webhook:\n{args or '(empty)'}"
         else:
@@ -393,7 +395,9 @@ def _fetch_current_weather(
     hourly = _qweather_get_json("/v7/weather/24h", {"location": location_ref, "lang": "zh", "unit": "m"})
     minutely = {}
     coordinates = _location_coordinates(location, max_digits=2)
-    if coordinates and _should_fetch_minutely(location, now, hourly, include_minutely=include_minutely, query_city=query_city):
+    if coordinates and _should_fetch_minutely(
+        location, now, hourly, include_minutely=include_minutely, query_city=query_city
+    ):
         try:
             minutely = _qweather_get_json("/v7/minutely/5m", {"location": coordinates, "lang": "zh"})
         except Exception as exc:
@@ -855,7 +859,10 @@ def _weather_http_error(exc: urllib.error.HTTPError) -> WeatherQueryError:
         detail = error.get("title") or error.get("detail") or ""
     except Exception:
         detail = ""
-    return WeatherQueryError(_weather_error_message(exc) if not detail else f"{_weather_error_message(exc)}（{detail}）", status_code=exc.code)
+    return WeatherQueryError(
+        _weather_error_message(exc) if not detail else f"{_weather_error_message(exc)}（{detail}）",
+        status_code=exc.code,
+    )
 
 
 def _fmt_value(value, unit: str) -> str:

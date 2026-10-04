@@ -59,24 +59,32 @@ class _FakeClient:
         self.sent_video_paths.append((to_user_id, filepath, size, context_token, play_length))
         return {"to_user_id": to_user_id, "size": size, "play_length": play_length}
 
-    def send_voice(self, to_user_id: str, file_data: bytes, context_token: str = "", playtime_ms: int = 0, text: str = "") -> dict:
+    def send_voice(
+        self, to_user_id: str, file_data: bytes, context_token: str = "", playtime_ms: int = 0, text: str = ""
+    ) -> dict:
         self.sent_voices.append((to_user_id, len(file_data), context_token, playtime_ms, text))
         return {"to_user_id": to_user_id, "size": len(file_data), "playtime_ms": playtime_ms}
 
-    def send_file(self, to_user_id: str, file_data: bytes, context_token: str = "", file_name: str = "file.bin", text: str = "") -> dict:
+    def send_file(
+        self, to_user_id: str, file_data: bytes, context_token: str = "", file_name: str = "file.bin", text: str = ""
+    ) -> dict:
         if self.file_error:
             raise self.file_error
         self.sent_files.append((to_user_id, len(file_data), context_token, file_name, text))
         return {"to_user_id": to_user_id, "size": len(file_data), "file_name": file_name}
 
-    def send_file_path(self, to_user_id: str, filepath: str, context_token: str = "", file_name: str = "", text: str = "") -> dict:
+    def send_file_path(
+        self, to_user_id: str, filepath: str, context_token: str = "", file_name: str = "", text: str = ""
+    ) -> dict:
         if self.file_error:
             raise self.file_error
         size = os.path.getsize(filepath)
         self.sent_file_paths.append((to_user_id, filepath, size, context_token, file_name, text))
         return {"to_user_id": to_user_id, "size": size, "file_name": file_name}
 
-    def send_reference_text(self, to_user_id: str, text: str, context_token: str = "", ref_text: str = "", ref_title: str = "") -> dict:
+    def send_reference_text(
+        self, to_user_id: str, text: str, context_token: str = "", ref_text: str = "", ref_title: str = ""
+    ) -> dict:
         if self.reference_error:
             raise self.reference_error
         self.sent_references.append((to_user_id, text, context_token, ref_text, ref_title))

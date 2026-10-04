@@ -569,7 +569,9 @@ class ILinkClient:
         if not download_ref:
             raise RuntimeError("CDN 上传成功但缺少下载凭证")
 
-        logger.info("媒体文件上传成功: filekey=%s, size=%d, encrypted_size=%d", filekey, meta["rawsize"], encrypted_size)
+        logger.info(
+            "媒体文件上传成功: filekey=%s, size=%d, encrypted_size=%d", filekey, meta["rawsize"], encrypted_size
+        )
 
         aes_key_hex = aes_key.hex()
         aes_key_b64 = base64.b64encode(aes_key_hex.encode("utf-8")).decode()
@@ -953,7 +955,9 @@ class ILinkClient:
         data["fallback"] = "text_quote"
         return data
 
-    def _send_items(self, to_user_id: str, items: list[dict], context_token: str = "", *, label: str = "发送消息") -> dict:
+    def _send_items(
+        self, to_user_id: str, items: list[dict], context_token: str = "", *, label: str = "发送消息"
+    ) -> dict:
         """发送一组结构化 MessageItem。"""
         if not self.bot_token:
             raise RuntimeError("未登录，请先扫码")

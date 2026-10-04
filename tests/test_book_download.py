@@ -94,9 +94,7 @@ class BookDownloadTests(unittest.TestCase):
                     "authors": [{"name": "Carroll, Lewis"}],
                     "languages": ["en"],
                     "copyright": False,
-                    "formats": {
-                        "application/epub+zip": "https://www.gutenberg.org/ebooks/11.epub3.images"
-                    },
+                    "formats": {"application/epub+zip": "https://www.gutenberg.org/ebooks/11.epub3.images"},
                     "download_count": 100,
                 },
                 {
@@ -105,9 +103,7 @@ class BookDownloadTests(unittest.TestCase):
                     "authors": [],
                     "languages": ["en"],
                     "copyright": True,
-                    "formats": {
-                        "application/pdf": "https://www.gutenberg.org/files/12/12.pdf"
-                    },
+                    "formats": {"application/pdf": "https://www.gutenberg.org/files/12/12.pdf"},
                 },
                 {
                     "id": 13,
@@ -352,11 +348,7 @@ class BookDownloadTests(unittest.TestCase):
                 "from_user": "uid-1",
                 "text": "[文件: Owned Book.epub]",
                 "media_paths": ["cached.bin"],
-                "msg": {
-                    "item_list": [
-                        {"type": 4, "file_item": {"file_name": "Owned Book.epub"}}
-                    ]
-                },
+                "msg": {"item_list": [{"type": 4, "file_item": {"file_name": "Owned Book.epub"}}]},
             }
         )
 

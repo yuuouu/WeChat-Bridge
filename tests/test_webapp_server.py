@@ -756,19 +756,26 @@ class WebAppServerTests(unittest.TestCase):
         boundary = "----video-boundary"
         video_bytes = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2048
         body = (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="to"\r\n\r\n'
-            "Alice\r\n"
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="video"; filename="a.mp4"\r\n'
-            "Content-Type: video/mp4\r\n\r\n"
-        ).encode() + video_bytes + f"\r\n--{boundary}--\r\n".encode()
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="to"\r\n\r\n'
+                "Alice\r\n"
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="video"; filename="a.mp4"\r\n'
+                "Content-Type: video/mp4\r\n\r\n"
+            ).encode()
+            + video_bytes
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
 
         status, _, resp_body = self._request(
             "/api/send_video?play_length=3",
             method="POST",
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": "Bearer secret-token",
+            },
         )
 
         self.assertEqual(status, 200, resp_body)
@@ -783,19 +790,26 @@ class WebAppServerTests(unittest.TestCase):
         boundary = "----voice-boundary"
         voice_bytes = b"\x02#!SILK_V3.\x00" + b"\x00" * 128
         body = (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="to"\r\n\r\n'
-            "Alice\r\n"
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="voice"; filename="a.silk"\r\n'
-            "Content-Type: audio/silk\r\n\r\n"
-        ).encode() + voice_bytes + f"\r\n--{boundary}--\r\n".encode()
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="to"\r\n\r\n'
+                "Alice\r\n"
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="voice"; filename="a.silk"\r\n'
+                "Content-Type: audio/silk\r\n\r\n"
+            ).encode()
+            + voice_bytes
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
 
         status, _, resp_body = self._request(
             "/api/send_voice?playtime_ms=1000",
             method="POST",
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": "Bearer secret-token",
+            },
         )
 
         self.assertEqual(status, 200, resp_body)
@@ -805,19 +819,26 @@ class WebAppServerTests(unittest.TestCase):
         boundary = "----voice-boundary-reject"
         voice_bytes = b"#!AMR\n" + b"\x00" * 128
         body = (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="to"\r\n\r\n'
-            "Alice\r\n"
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="voice"; filename="a.amr"\r\n'
-            "Content-Type: audio/amr\r\n\r\n"
-        ).encode() + voice_bytes + f"\r\n--{boundary}--\r\n".encode()
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="to"\r\n\r\n'
+                "Alice\r\n"
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="voice"; filename="a.amr"\r\n'
+                "Content-Type: audio/amr\r\n\r\n"
+            ).encode()
+            + voice_bytes
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
 
         status, _, resp_body = self._request(
             "/api/send_voice?playtime_ms=1000",
             method="POST",
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": "Bearer secret-token",
+            },
         )
 
         self.assertEqual(status, 400, resp_body)
@@ -828,22 +849,29 @@ class WebAppServerTests(unittest.TestCase):
         boundary = "----file-boundary"
         file_bytes = b"hello file"
         body = (
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="to"\r\n\r\n'
-            "Alice\r\n"
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="text"\r\n\r\n'
-            "附件说明\r\n"
-            f"--{boundary}\r\n"
-            'Content-Disposition: form-data; name="file"; filename="report.txt"\r\n'
-            "Content-Type: text/plain\r\n\r\n"
-        ).encode() + file_bytes + f"\r\n--{boundary}--\r\n".encode()
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="to"\r\n\r\n'
+                "Alice\r\n"
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="text"\r\n\r\n'
+                "附件说明\r\n"
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="file"; filename="report.txt"\r\n'
+                "Content-Type: text/plain\r\n\r\n"
+            ).encode()
+            + file_bytes
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
 
         status, _, resp_body = self._request(
             "/api/send_file",
             method="POST",
             data=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Authorization": "Bearer secret-token"},
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": "Bearer secret-token",
+            },
         )
 
         self.assertEqual(status, 200, resp_body)
