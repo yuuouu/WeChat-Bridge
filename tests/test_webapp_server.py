@@ -42,6 +42,14 @@ class _FakeClient:
         return self.bot_id
 
 
+class _FakeMessageStore:
+    def __init__(self):
+        self.messages = {}
+
+    def get_message_by_msg_id(self, message_id):
+        return self.messages.get(message_id)
+
+
 class _FakeBridge:
     def __init__(self):
         self.contacts = {"uid-1": "Alice"}
@@ -49,6 +57,8 @@ class _FakeBridge:
         self._running = True
         self.ag_inbox = []
         self.sent = []
+        self.send_allow_buffer = []
+        self.db = _FakeMessageStore()
         self.sent_video_paths = []
         self.sent_voices = []
         self.sent_files = []
@@ -61,9 +71,10 @@ class _FakeBridge:
         self.setup_data_dir_called = False
         self.load_contacts_called = False
 
-    def send(self, to, text, source="api", title=""):
+    def send(self, to, text, source="api", title="", allow_buffer=True, request_id=""):
         self.sent.append((to, text, source, title))
-        return {"ok": True, "result": {"to": to, "text": text}}
+        self.send_allow_buffer.append(allow_buffer)
+        return {"ok": True, "result": {"to": to, "text": text}, "message_id": request_id or None}
 
     def send_video_path(self, to, filepath, play_length=0):
         self.sent_video_paths.append((to, Path(filepath).read_bytes(), play_length, Path(filepath).exists()))
@@ -484,6 +495,91 @@ class WebAppServerTests(unittest.TestCase):
         data = json.loads(body)
         self.assertTrue(data["ok"])
         self.assertEqual(self.bridge.sent, [("Alice", "hello", "api", "")])
+        self.assertEqual(self.bridge.send_allow_buffer, [True])
+
+    def test_api_send_post_can_disable_buffering(self):
+        payload = json.dumps({"to": "Alice", "text": "hello", "allow_buffer": False}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.bridge.send_allow_buffer, [False])
+
+    def test_api_send_post_forwards_request_id(self):
+        payload = json.dumps({"to": "Alice", "text": "hello", "request_id": "nh_api_001"}).encode("utf-8")
+
+        status, _, body = self._request(
+            "/api/send",
+            method="POST",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer secret-token",
+            },
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["message_id"], "nh_api_001")
+
+    def test_api_send_get_can_disable_buffering(self):
+        status, _, body = self._request(
+            "/api/send?to=Alice&text=hello&allow_buffer=0",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self.bridge.send_allow_buffer, [False])
+
+    def test_api_delivery_requires_api_token(self):
+        status, _, body = self._request("/api/delivery?message_id=message-1")
+
+        self.assertEqual(status, 401)
+        self.assertIn("Unauthorized", body)
+
+    def test_api_delivery_returns_current_stage(self):
+        self.bridge.db.messages["message-1"] = {
+            "msg_id": "message-1",
+            "delivery_stage": "pulled",
+            "pending_message_id": 7,
+            "overflow_session_id": "overflow-1",
+            "meta": {"blocked_reason": "quota_10"},
+        }
+
+        status, _, body = self._request(
+            "/api/delivery?message_id=message-1",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["message_id"], "message-1")
+        self.assertEqual(data["delivery_stage"], "pulled")
+        self.assertEqual(data["pending_message_id"], 7)
+        self.assertEqual(data["blocked_reason"], "quota_10")
+        self.assertEqual(data["overflow_session_id"], "overflow-1")
+
+    def test_api_delivery_reads_local_state_while_account_is_logged_out(self):
+        self.client.logged_in = False
+        self.bridge.db.messages["message-offline"] = {
+            "msg_id": "message-offline",
+            "delivery_stage": "discarded",
+        }
+
+        status, _, body = self._request(
+            "/api/delivery?message_id=message-offline",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["delivery_stage"], "discarded")
 
     def test_api_send_without_to_uses_default_contact(self):
         self.bridge.contacts = {"uid-new": "New", "uid-old": "Old"}
@@ -888,6 +984,31 @@ class MultiAccountWebAppServerTests(unittest.TestCase):
         data = json.loads(body)
         self.assertEqual(data["bot_id"], "bot-b")
         self.assertEqual(data["resolved_to"], "Bob")
+
+    def test_delivery_query_uses_selected_account(self):
+        self.manager.bridge_a.db.messages["message-1"] = {
+            "msg_id": "message-1",
+            "delivery_stage": "pulled",
+        }
+        self.manager.bridge_b.db.messages["message-1"] = {
+            "msg_id": "message-1",
+            "delivery_stage": "discarded",
+            "pending_message_id": 9,
+            "overflow_session_id": "overflow-b",
+            "meta": {"blocked_reason": "window_24h"},
+        }
+
+        status, _, body = self._request(
+            "/api/delivery?bot_id=bot-b&message_id=message-1",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertEqual(data["delivery_stage"], "discarded")
+        self.assertEqual(data["pending_message_id"], 9)
+        self.assertEqual(data["blocked_reason"], "window_24h")
+        self.assertEqual(data["overflow_session_id"], "overflow-b")
 
     def test_invalid_bot_id_returns_404(self):
         payload = json.dumps({"bot_id": "missing", "to": "Bob", "text": "hello"}).encode("utf-8")

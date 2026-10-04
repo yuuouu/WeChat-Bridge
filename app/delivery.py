@@ -7,8 +7,10 @@ from __future__ import annotations
 所有 self.* 引用在运行时由 WeChatBridge 实例提供。
 """
 
+import hashlib
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -23,6 +25,7 @@ MAX_CONSECUTIVE_SENDS = 10
 WINDOW_DEADLINE_SECONDS = 24 * 3600
 PULL_CHUNK_LIMIT = int(os.environ.get("PULL_CHUNK_LIMIT", "5200"))
 PENDING_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("PENDING_CLEANUP_INTERVAL_SECONDS", "3600"))
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 TIME_SENSITIVE_PENDING_KEYWORDS = (
     "市场简报",
@@ -241,6 +244,52 @@ class DeliveryMixin:
 
     # ── 出站消息记录与缓存 ──
 
+    def _normalize_request_id(self, request_id: str | None) -> str:
+        normalized = str(request_id or "").strip()
+        return normalized if normalized and REQUEST_ID_PATTERN.fullmatch(normalized) else ""
+
+    def _delivery_request_fingerprint(self, user_id: str, text: str, source: str, title: str) -> str:
+        raw = "\0".join((str(user_id), str(text), str(source), str(title)))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _existing_request_delivery(self, request_id: str, request_fingerprint: str) -> dict | None:
+        message = self.db.get_message_by_msg_id(request_id)
+        if message is None:
+            return None
+        meta = message.get("meta") if isinstance(message.get("meta"), dict) else {}
+        if meta.get("request_fingerprint") != request_fingerprint:
+            return {
+                "ok": False,
+                "delivery_stage": "failed",
+                "message_id": None,
+                "pending_message_id": None,
+                "blocked_reason": "idempotency_conflict",
+                "overflow_session_id": None,
+                "error": "request_id 已用于其他投递请求",
+            }
+        stage = str(message.get("delivery_stage") or "uncertain")
+        return {
+            "ok": stage not in ("failed", "discarded"),
+            "deduplicated": True,
+            "delivery_stage": stage,
+            "message_id": message["msg_id"],
+            "pending_message_id": message.get("pending_message_id"),
+            "blocked_reason": meta.get("blocked_reason"),
+            "overflow_session_id": message.get("overflow_session_id"),
+            **({"error": f"既有投递阶段为 {stage}"} if stage in ("failed", "discarded") else {}),
+        }
+
+    def _blocked_delivery_result(self, reason: str, error: str) -> dict:
+        return {
+            "ok": False,
+            "delivery_stage": "failed",
+            "message_id": None,
+            "pending_message_id": None,
+            "blocked_reason": reason,
+            "overflow_session_id": None,
+            "error": error,
+        }
+
     def _record_outbound_message(
         self,
         *,
@@ -255,12 +304,16 @@ class DeliveryMixin:
         title: str = "",
         media_name: str | None = None,
         extra_meta: dict | None = None,
-    ):
+        message_id: str | None = None,
+        request_fingerprint: str | None = None,
+    ) -> str | None:
         meta = {"source": source}
         if title:
             meta["title"] = title
         if extra_meta:
             meta.update(extra_meta)
+        if request_fingerprint:
+            meta["request_fingerprint"] = request_fingerprint
         now_ts = int(time.time())
         self.db.record_contact_activity(
             user_id=user_id,
@@ -268,14 +321,15 @@ class DeliveryMixin:
             display_name=contact_name,
             outbound_at=now_ts,
         )
-        self._record_message(
+        resolved_message_id = message_id or f"{msg_prefix}_{uuid.uuid4().hex[:10]}"
+        saved = self._record_message(
             {
                 "type": "send",
                 "contact": contact_name,
                 "user_id": user_id,
                 "text": text,
                 "time": now_ts,
-                "msg_id": f"{msg_prefix}_{uuid.uuid4().hex[:10]}",
+                "msg_id": resolved_message_id,
                 "media": media_name,
                 "delivery_stage": delivery_stage,
                 "overflow_session_id": overflow_session_id,
@@ -283,6 +337,10 @@ class DeliveryMixin:
                 "meta": meta,
             }
         )
+        if not saved:
+            logger.error("出站消息本地记录失败: message_id=%s", resolved_message_id)
+            return None
+        return resolved_message_id
 
     def _buffer_message(
         self,
@@ -295,6 +353,8 @@ class DeliveryMixin:
         title: str = "",
         media_name: str | None = None,
         extra_meta: dict | None = None,
+        message_id: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> dict:
         self.cleanup_expired_pending_messages(force=False)
         session = self._ensure_active_overflow_session(user_id, reason)
@@ -307,7 +367,7 @@ class DeliveryMixin:
             media=media_name,
             blocked_reason=reason,
         )
-        self._record_outbound_message(
+        saved_message_id = self._record_outbound_message(
             contact_name=contact_name,
             user_id=user_id,
             text=text,
@@ -319,6 +379,8 @@ class DeliveryMixin:
             title=title,
             media_name=media_name,
             extra_meta={"blocked_reason": reason, **(extra_meta or {})},
+            message_id=message_id,
+            request_fingerprint=request_fingerprint,
         )
         self._set_delivery_state(
             user_id,
@@ -330,9 +392,13 @@ class DeliveryMixin:
         return {
             "ok": True,
             "buffered": True,
+            "delivery_stage": "buffered",
+            "message_id": saved_message_id,
+            "pending_message_id": pending["id"],
             "blocked_reason": reason,
             "overflow_session_id": session["id"],
             "message": f"消息已进入缓存队列（{reason_text}），用户回复后发送 /pull 可继续拉取。",
+            **({"error": "缓存已建立，但本地消息索引写入失败"} if not saved_message_id else {}),
         }
 
     # ── 发送决策 ──
@@ -384,6 +450,8 @@ class DeliveryMixin:
         extra_meta: dict | None = None,
         image_data: bytes | None = None,
         media_name: str | None = None,
+        message_id: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> dict:
         with self._outbound_lock:
             now_ts = int(time.time())
@@ -402,11 +470,13 @@ class DeliveryMixin:
                         title=title,
                         media_name=media_name,
                         extra_meta=extra_meta,
+                        message_id=message_id,
+                        request_fingerprint=request_fingerprint,
                     )
                 from datetime import datetime
 
                 unmute_str = datetime.fromtimestamp(mute_ts).strftime("%H:%M")
-                return {"ok": False, "error": f"静默模式中，{unmute_str} 后恢复。"}
+                return self._blocked_delivery_result("muted", f"静默模式中，{unmute_str} 后恢复。")
 
             if self._is_window_expired(user_id, state, now_ts):
                 if allow_buffer:
@@ -419,8 +489,13 @@ class DeliveryMixin:
                         title=title,
                         media_name=media_name,
                         extra_meta=extra_meta,
+                        message_id=message_id,
+                        request_fingerprint=request_fingerprint,
                     )
-                return {"ok": False, "error": "已超过 24 小时未收到用户消息，请等待对方回复后再继续发送。"}
+                return self._blocked_delivery_result(
+                    "window_24h",
+                    "已超过 24 小时未收到用户消息，请等待对方回复后再继续发送。",
+                )
 
             current_count = int(state.get("consecutive_send_count") or 0)
             active_session_id = state.get("active_overflow_session_id")
@@ -436,8 +511,13 @@ class DeliveryMixin:
                         title=title,
                         media_name=media_name,
                         extra_meta=extra_meta,
+                        message_id=message_id,
+                        request_fingerprint=request_fingerprint,
                     )
-                return {"ok": False, "error": "已连续发送 10 条消息，请等待用户回复后发送 /pull 拉取缓存消息。"}
+                return self._blocked_delivery_result(
+                    "quota_10",
+                    "已连续发送 10 条消息，请等待用户回复后发送 /pull 拉取缓存消息。",
+                )
 
             next_count = current_count + 1
             warning_appended = False
@@ -483,7 +563,18 @@ class DeliveryMixin:
                             **({"limit_warning": True} if warning_appended else {}),
                         }
                         or None,
+                        message_id=message_id,
+                        request_fingerprint=request_fingerprint,
                     )
+                if self._is_window_limit_error(exc):
+                    limit_reason = self._resolve_limit_error_reason(
+                        user_id=user_id,
+                        state=state,
+                        now_ts=now_ts,
+                        next_count=next_count,
+                        warning_appended=warning_appended,
+                    )
+                    return self._blocked_delivery_result(limit_reason, str(exc))
                 if self._is_delivery_uncertain_error(exc):
                     resolved_meta = dict(extra_meta or {})
                     resolved_meta["delivery_uncertain"] = True
@@ -491,8 +582,9 @@ class DeliveryMixin:
                     if warning_appended:
                         resolved_meta["limit_warning"] = True
                         resolved_meta["blocked_reason"] = "quota_10"
+                    saved_message_id = None
                     if record_timeline:
-                        self._record_outbound_message(
+                        saved_message_id = self._record_outbound_message(
                             contact_name=contact_name,
                             user_id=user_id,
                             text=final_text,
@@ -503,6 +595,8 @@ class DeliveryMixin:
                             title=title,
                             media_name=media_name,
                             extra_meta=resolved_meta,
+                            message_id=message_id,
+                            request_fingerprint=request_fingerprint,
                         )
                     status, blocked_reason, saved_session_id = self._next_status_after_send(
                         consecutive_send_count=next_count,
@@ -521,17 +615,22 @@ class DeliveryMixin:
                         "result": None,
                         "warning": warning_appended,
                         "uncertain": True,
+                        "delivery_stage": "uncertain",
+                        "message_id": saved_message_id,
+                        "pending_message_id": None,
+                        "blocked_reason": blocked_reason,
                         "overflow_session_id": saved_session_id,
                         "message": "接口响应超时，消息可能已送达，已先写入消息记录。",
                     }
-                return {"ok": False, "error": str(exc)}
+                return self._blocked_delivery_result("send_error", str(exc))
 
+            saved_message_id = None
             if record_timeline:
                 resolved_meta = dict(extra_meta or {})
                 if warning_appended:
                     resolved_meta["limit_warning"] = True
                     resolved_meta["blocked_reason"] = "quota_10"
-                self._record_outbound_message(
+                saved_message_id = self._record_outbound_message(
                     contact_name=contact_name,
                     user_id=user_id,
                     text=final_text,
@@ -542,6 +641,8 @@ class DeliveryMixin:
                     title=title,
                     media_name=media_name,
                     extra_meta=resolved_meta or None,
+                    message_id=message_id,
+                    request_fingerprint=request_fingerprint,
                 )
 
             status, blocked_reason, saved_session_id = self._next_status_after_send(
@@ -556,10 +657,27 @@ class DeliveryMixin:
                 blocked_reason=blocked_reason,
                 active_overflow_session_id=saved_session_id,
             )
+            if record_timeline and not saved_message_id:
+                return {
+                    "ok": True,
+                    "result": result,
+                    "warning": warning_appended,
+                    "uncertain": True,
+                    "delivery_stage": "uncertain",
+                    "message_id": None,
+                    "pending_message_id": None,
+                    "blocked_reason": blocked_reason or "local_persistence",
+                    "overflow_session_id": saved_session_id,
+                    "error": "上游调用已完成，但本地投递记录写入失败",
+                }
             return {
                 "ok": True,
                 "result": result,
                 "warning": warning_appended,
+                "delivery_stage": delivery_stage_on_success,
+                "message_id": saved_message_id,
+                "pending_message_id": None,
+                "blocked_reason": blocked_reason,
                 "overflow_session_id": saved_session_id,
             }
 
@@ -656,7 +774,11 @@ class DeliveryMixin:
 
             if len(block) > PULL_CHUNK_LIMIT:
                 if current_text:
-                    chunks.append({"text": current_text, "completed_ids": current_completed_ids[:]})
+                    chunks.append({
+                        "text": current_text,
+                        "pending_ids": current_completed_ids[:],
+                        "completed_ids": current_completed_ids[:],
+                    })
                     current_text = ""
                     current_completed_ids = []
 
@@ -665,6 +787,7 @@ class DeliveryMixin:
                     chunks.append(
                         {
                             "text": segment,
+                            "pending_ids": [pending_id],
                             "completed_ids": [pending_id] if idx == len(segments) - 1 else [],
                         }
                     )
@@ -676,12 +799,20 @@ class DeliveryMixin:
                 current_completed_ids.append(pending_id)
                 continue
 
-            chunks.append({"text": current_text, "completed_ids": current_completed_ids[:]})
+            chunks.append({
+                "text": current_text,
+                "pending_ids": current_completed_ids[:],
+                "completed_ids": current_completed_ids[:],
+            })
             current_text = block
             current_completed_ids = [pending_id]
 
         if current_text:
-            chunks.append({"text": current_text, "completed_ids": current_completed_ids[:]})
+            chunks.append({
+                "text": current_text,
+                "pending_ids": current_completed_ids[:],
+                "completed_ids": current_completed_ids[:],
+            })
         return chunks
 
     def pull_pending_messages(self, user_id: str) -> dict:
@@ -705,6 +836,7 @@ class DeliveryMixin:
         contact_name = self._contact_name(user_id)
         context_token = self.get_context_token(user_id)
         delivered_pending_ids: list[int] = []
+        uncertain_pending_ids: list[int] = []
         sent_chunks = 0
 
         for chunk in chunks:
@@ -722,6 +854,14 @@ class DeliveryMixin:
                 extra_meta={"pull_batch": True, "pull_session_id": session_id},
             )
             if not result.get("ok"):
+                break
+            if result.get("delivery_stage") == "uncertain":
+                affected_ids = chunk.get("pending_ids") or chunk["completed_ids"]
+                uncertain_pending_ids.extend(affected_ids)
+                self.db.mark_pending_messages_uncertain(affected_ids)
+                self.db.update_message_delivery_stage_for_pending_ids(affected_ids, "uncertain")
+                break
+            if result.get("delivery_stage") != "pulled":
                 break
 
             sent_chunks += 1
@@ -757,5 +897,6 @@ class DeliveryMixin:
             "ok": sent_chunks > 0,
             "sent_chunks": sent_chunks,
             "delivered_pending_ids": delivered_pending_ids,
+            "uncertain_pending_ids": uncertain_pending_ids,
             "remaining": remaining,
         }

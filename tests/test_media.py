@@ -43,9 +43,13 @@ class MediaTests(unittest.TestCase):
 
         class _FakeResp:
             content = encrypted
+            headers = {}
 
             def raise_for_status(self):
                 return None
+
+            def iter_content(self, chunk_size=64 * 1024):
+                yield self.content
 
         with patch("media.requests.get", return_value=_FakeResp()), patch("media.time.time", return_value=1710000000):
             path = media.download_and_decrypt_media(
@@ -60,6 +64,32 @@ class MediaTests(unittest.TestCase):
         self.assertTrue(saved.exists())
         self.assertEqual(saved.read_bytes(), plaintext)
         self.assertEqual(saved.suffix, ".jpg")
+
+    def test_download_and_decrypt_media_rejects_stream_over_limit(self):
+        key = b"0123456789abcdef"
+        encrypted = media.encrypt_aes_ecb(b"x" * 64, key)
+
+        class _FakeResp:
+            headers = {}
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size=64 * 1024):
+                yield encrypted[:32]
+                yield encrypted[32:]
+
+        with patch("media.requests.get", return_value=_FakeResp()):
+            path = media.download_and_decrypt_media(
+                encrypted_query_param="abc",
+                aes_key_b64=base64.b64encode(key.hex().encode("ascii")).decode("ascii"),
+                msg_id="msg-file",
+                media_type="file",
+                max_bytes=32,
+            )
+
+        self.assertIsNone(path)
+        self.assertEqual(list(Path(self.tempdir.name).iterdir()), [])
 
     def test_encrypt_aes_ecb_file_matches_bytes_encryption(self):
         key = b"0123456789abcdef"

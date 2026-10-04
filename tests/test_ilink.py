@@ -759,6 +759,46 @@ class MediaProtocolTests(unittest.TestCase):
         self.assertEqual(file_item["file_item"]["file_name"], "report.txt")
         self.assertEqual(file_item["file_item"]["len"], "123")
 
+    def test_send_file_path_uses_upload_file_type_and_message_file_item_type(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+        file_path = Path(self.tempdir.name) / "book.epub"
+        file_path.write_bytes(b"PK\x03\x04ebook")
+
+        send_resp = MagicMock()
+        send_resp.json.return_value = {"ret": 0, "errcode": 0}
+        send_resp.raise_for_status = MagicMock()
+        upload_result = {
+            "encrypt_query_param": "download-ref",
+            "aes_key_b64": "aes-b64",
+            "aes_key_hex": "aes-hex",
+            "encrypted_size": 128,
+            "file_size": file_path.stat().st_size,
+        }
+
+        with (
+            patch.object(client, "upload_media_path", return_value=upload_result) as mock_upload,
+            patch.object(client._session, "post", return_value=send_resp) as mock_post,
+        ):
+            result = client.send_file_path(
+                "user@im.wechat",
+                str(file_path),
+                "ctx-token",
+                file_name="book.epub",
+                text="公版书",
+            )
+
+        self.assertEqual(result["ret"], 0)
+        mock_upload.assert_called_once_with(
+            str(file_path), media_type=ilink.UPLOAD_MEDIA_TYPE_FILE, to_user_id="user@im.wechat"
+        )
+        payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
+        self.assertEqual(payloads[0]["msg"]["item_list"][0]["type"], ilink.MESSAGE_ITEM_TYPE_TEXT)
+        file_item = payloads[1]["msg"]["item_list"][0]
+        self.assertEqual(file_item["type"], ilink.MESSAGE_ITEM_TYPE_FILE)
+        self.assertEqual(file_item["file_item"]["file_name"], "book.epub")
+        self.assertEqual(file_item["file_item"]["len"], str(file_path.stat().st_size))
+
     def test_send_reference_text_uses_text_quote_fallback(self):
         client = ilink.ILinkClient()
         client.bot_token = "test-token"

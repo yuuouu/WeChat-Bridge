@@ -10,6 +10,7 @@
 | `session_notes.py` | 有状态会话插件，演示 `/note` 开始、普通消息收集、`/exit` 结束 |
 | `forwarder.py` | 入站消息转发插件，通过 `FORWARD_URLS` 指定一个或多个目标 URL |
 | `bridge_code_agent.py` | 通过微信远程驱动 Gemini / Claude Code / Codex 等 AI CLI |
+| `bridge_book_download.py` | 搜索书目、下载 Project Gutenberg 公版书，并把自有电子书提交到 CWA |
 
 ## 使用方式
 
@@ -57,6 +58,39 @@ QWEATHER_JWT=your_jwt
 QWEATHER_API_HOST=abcxyz.qweatherapi.com
 QWEATHER_GEO_API_HOST=geoapi.qweather.com
 ```
+
+## 书目检索、公版下载与自有文件导入
+
+`bridge_book_download.py` 将“书目检索”和“自动下载”分开：豆瓣书目建议与 Open Library 用于查询元数据，Gutendex 用于查询 Project Gutenberg 中明确标记为公版且具有 EPUB、PDF、MOBI 或 TXT 文件的结果。
+
+```text
+/找书 了不起的我
+/书籍 Alice
+/书籍 1
+/书籍 取消
+/导入书籍
+```
+
+`/书籍` 无公版下载结果时会返回书目详情，并明确提示暂无可验证的合法直链。`/导入书籍` 会建立 5 分钟会话，接收用户有权使用的 EPUB、PDF、MOBI 或 TXT 文件并提交到 CWA ingest。
+
+搜索与导入会话默认保留 5 分钟，文件默认上限为 20 MiB。插件仅允许从 `gutenberg.org` 的 HTTPS 地址自动下载，并校验文件体积和格式签名，不接受用户提交的任意 URL。入站文件还会在微信 CDN 下载前检查声明大小，并在流式接收过程中执行硬上限。
+
+可选配置：
+
+```bash
+GUTENDEX_API_BASE=https://gutendex.com
+BOOK_DOWNLOAD_DIR=/data/book-downloads
+BOOK_INGEST_DIR=/data/book-ingest
+BOOK_DOWNLOAD_MAX_BYTES=20971520
+BOOK_IMPORT_MAX_BYTES=20971520
+BOOK_DOWNLOAD_TIMEOUT=120
+BOOK_SEARCH_LIMIT=5
+BOOK_SESSION_TTL=300
+BOOK_MAX_CONCURRENCY=1
+FILE_MEDIA_MAX_BYTES=20971520
+```
+
+`BOOK_INGEST_DIR` 存在时，成功发送的公版文件与用户导入的自有文件会原子复制到该目录，可交给 Calibre-Web Automated 等书库服务继续整理。书目详情页只用于发现、购买或借阅，不会被当作电子书下载地址。
 
 ## 插件安全
 

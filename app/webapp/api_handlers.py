@@ -249,26 +249,71 @@ def _weather_error_status(exc: Exception) -> int:
     return 500
 
 
-def _send_target(ctx, default_bridge, target: str, text: str, *, source: str = "api", title: str = "") -> dict:
+def _send_target(
+    ctx,
+    default_bridge,
+    target: str,
+    text: str,
+    *,
+    source: str = "api",
+    title: str = "",
+    allow_buffer: bool = True,
+    request_id: str = "",
+) -> dict:
     bridge, resolved_target, routed_bot_id = _split_account_target(ctx, default_bridge, target)
-    result = bridge.send(resolved_target, text, source=source, title=title)
+    result = bridge.send(
+        resolved_target,
+        text,
+        source=source,
+        title=title,
+        allow_buffer=allow_buffer,
+        request_id=request_id,
+    )
     if routed_bot_id:
         result = {**result, "bot_id": routed_bot_id, "resolved_to": resolved_target}
     return result
 
 
-def _multicast_send(ctx, bridge, to_str: str, text: str, *, source: str = "api", title: str = "") -> dict:
+def _multicast_send(
+    ctx,
+    bridge,
+    to_str: str,
+    text: str,
+    *,
+    source: str = "api",
+    title: str = "",
+    allow_buffer: bool = True,
+    request_id: str = "",
+) -> dict:
     targets = [item.strip() for item in to_str.split(",") if item.strip()]
     if not targets:
         return {"ok": False, "error": "无有效目标"}
 
     if len(targets) == 1:
-        return _send_target(ctx, bridge, targets[0], text, source=source, title=title)
+        return _send_target(
+            ctx,
+            bridge,
+            targets[0],
+            text,
+            source=source,
+            title=title,
+            allow_buffer=allow_buffer,
+            request_id=request_id,
+        )
 
     results = []
     success = 0
     for index, target in enumerate(targets):
-        result = _send_target(ctx, bridge, target, text, source=source, title=title)
+        result = _send_target(
+            ctx,
+            bridge,
+            target,
+            text,
+            source=source,
+            title=title,
+            allow_buffer=allow_buffer,
+            request_id=f"{request_id}.{index + 1}" if request_id else "",
+        )
         results.append({"to": target, **result})
         if result.get("ok"):
             success += 1
@@ -611,6 +656,41 @@ def handle_messages(handler, ctx, params):
     handler._json_response({"messages": messages})
 
 
+def handle_delivery(handler, ctx, params):
+    if not handler._check_api_token():
+        return
+    account_ref = _bot_id_from(params) or None
+    runtime = ctx.resolve_runtime(account_ref)
+    message_store = runtime.bridge.db if runtime is not None else None
+    if message_store is None and account_ref and ctx.account_manager is not None:
+        message_store = ctx.account_manager.get_account_message_store(account_ref)
+    if message_store is None:
+        if account_ref:
+            handler._json_response({"ok": False, "error": f"账号不存在或消息库不可用: {account_ref}"}, 404)
+        else:
+            handler._json_response({"ok": False, "error": "未登录"}, 401)
+        return
+    message_id = params.get("message_id", [""])[0].strip()
+    if not message_id:
+        handler._json_response({"ok": False, "error": "缺少 message_id 参数"}, 400)
+        return
+    message = message_store.get_message_by_msg_id(message_id)
+    if not message:
+        handler._json_response({"ok": False, "error": "消息不存在"}, 404)
+        return
+    meta = message.get("meta") if isinstance(message.get("meta"), dict) else {}
+    handler._json_response(
+        {
+            "ok": True,
+            "message_id": message["msg_id"],
+            "delivery_stage": message.get("delivery_stage") or "direct",
+            "pending_message_id": message.get("pending_message_id"),
+            "blocked_reason": meta.get("blocked_reason"),
+            "overflow_session_id": message.get("overflow_session_id"),
+        }
+    )
+
+
 def handle_get_ai_config(handler, ctx, params):
     if not ctx.any_logged_in():
         handler._json_response({"error": "未登录"}, 401)
@@ -690,7 +770,18 @@ def handle_send_get(handler, ctx, params):
         params.get("markdown", [""])[0],
         params.get("markdown_mode", [""])[0],
     )
-    result = _multicast_send(ctx, runtime.bridge, to, text, source="api", title=title)
+    allow_buffer = _bool_value(params.get("allow_buffer", [None])[0], True)
+    request_id = str(params.get("request_id", [""])[0] or "").strip()
+    result = _multicast_send(
+        ctx,
+        runtime.bridge,
+        to,
+        text,
+        source="api",
+        title=title,
+        allow_buffer=allow_buffer,
+        request_id=request_id,
+    )
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 
@@ -805,7 +896,18 @@ def handle_send_post(handler, ctx, params, body):
         return
 
     text = apply_markdown_mode(text, data.get("markdown"), data.get("markdown_mode"))
-    result = _multicast_send(ctx, runtime.bridge, to, text, source="api", title=title)
+    allow_buffer = _bool_value(data.get("allow_buffer"), True)
+    request_id = str(data.get("request_id") or "").strip()
+    result = _multicast_send(
+        ctx,
+        runtime.bridge,
+        to,
+        text,
+        source="api",
+        title=title,
+        allow_buffer=allow_buffer,
+        request_id=request_id,
+    )
     handler._json_response(result, 200 if result.get("ok") else 400)
 
 

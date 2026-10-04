@@ -426,6 +426,42 @@ class AccountManager:
             return next(iter(self._runtimes.values()))
         return None
 
+    def get_account_message_store(self, account_ref: str) -> db.MessageStore | None:
+        """按精确账号标识打开既有消息库，供离线状态回查。"""
+        account_ref = str(account_ref or "").strip()
+        if not account_ref:
+            return None
+
+        matches = {
+            str(account.get("bot_id") or ""): account
+            for account in db.list_bot_accounts()
+            if account_ref in {
+                str(account.get("bot_id") or ""),
+                str(account.get("ilink_user_id") or ""),
+            }
+            and account.get("bot_id")
+        }
+        if len(matches) != 1:
+            return None
+
+        account = next(iter(matches.values()))
+        raw_data_dir = str(account.get("data_dir") or "").strip()
+        if not raw_data_dir:
+            return None
+        try:
+            data_base = Path(self.data_base).resolve()
+            data_dir = Path(raw_data_dir).resolve()
+            data_dir.relative_to(data_base)
+            message_db = (data_dir / "messages.db").resolve()
+            message_db.relative_to(data_base)
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("拒绝越界的账号消息库路径: bot_id=%s", account.get("bot_id"))
+            return None
+
+        if not message_db.is_file():
+            return None
+        return db.MessageStore(str(message_db))
+
     def has_accounts(self) -> bool:
         return bool(self._runtimes)
 

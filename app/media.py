@@ -280,6 +280,7 @@ def download_and_decrypt_media(
     media_type: str = "video",
     timeout: int = 60,
     media_dir: str | None = None,
+    max_bytes: int | None = None,
 ) -> str | None:
     """
     通用媒体文件下载解密（图片/视频/文件/语音等）
@@ -295,7 +296,22 @@ def download_and_decrypt_media(
     try:
         resp = requests.get(cdn_url, timeout=timeout, stream=True)
         resp.raise_for_status()
-        encrypted_data = resp.content
+        encrypted_limit = encrypted_size_for_plain_size(max_bytes) if max_bytes is not None else None
+        try:
+            declared_size = int(resp.headers.get("Content-Length") or "0")
+        except (TypeError, ValueError):
+            declared_size = 0
+        if encrypted_limit is not None and declared_size > encrypted_limit:
+            raise ValueError(f"CDN {media_type} 超过大小上限: {declared_size} > {encrypted_limit}")
+
+        encrypted_buffer = bytearray()
+        for chunk in resp.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            encrypted_buffer.extend(chunk)
+            if encrypted_limit is not None and len(encrypted_buffer) > encrypted_limit:
+                raise ValueError(f"CDN {media_type} 超过大小上限: {len(encrypted_buffer)} > {encrypted_limit}")
+        encrypted_data = bytes(encrypted_buffer)
         logger.info(
             "CDN %s 下载完成: %d bytes (%.1f MB)", media_type, len(encrypted_data), len(encrypted_data) / 1048576
         )
@@ -309,6 +325,8 @@ def download_and_decrypt_media(
 
         # AES-128-ECB 解密
         decrypted = decrypt_aes_ecb(encrypted_data, aes_key)
+        if max_bytes is not None and len(decrypted) > max_bytes:
+            raise ValueError(f"解密后 {media_type} 超过大小上限: {len(decrypted)} > {max_bytes}")
         logger.info("%s 解密成功: %d bytes (%.1f MB)", media_type, len(decrypted), len(decrypted) / 1048576)
 
         # 检测格式

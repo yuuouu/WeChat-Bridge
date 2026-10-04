@@ -610,14 +610,14 @@ def init_db(db_file: str = None):
         logger.info("消息数据库已初始化: %s (现有 %d 条记录)", _active_db_file, count)
 
 
-def save_message(msg: dict):
-    """存储一条消息（去重：msg_id 唯一约束）。"""
+def save_message(msg: dict) -> bool:
+    """存储一条消息；仅在新记录确实落盘时返回 True。"""
     with _lock:
         conn = _get_conn()
         try:
             meta = msg.get("meta")
             meta_json = json.dumps(meta, ensure_ascii=False) if meta is not None else None
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO messages (
                     msg_id, type, contact, user_id, text, time, media,
@@ -640,8 +640,14 @@ def save_message(msg: dict):
                 ),
             )
             conn.commit()
+            return cursor.rowcount == 1
         except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logger.warning("保存消息失败: %s", exc)
+            return False
 
 
 def get_messages(limit: int = 200, before_id: int = None) -> list[dict]:
@@ -664,6 +670,18 @@ def get_messages(limit: int = 200, before_id: int = None) -> list[dict]:
             ).fetchall()
 
     return [_row_to_message(row) for row in reversed(rows)]
+
+
+def get_message_by_msg_id(message_id: str) -> dict | None:
+    """按消息 ID 查询当前投递阶段。"""
+    if not message_id:
+        return None
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT * FROM messages WHERE msg_id = ? LIMIT 1",
+            (str(message_id),),
+        ).fetchone()
+    return _row_to_message(row) if row else None
 
 
 def get_message_count() -> int:
@@ -1174,6 +1192,30 @@ def mark_pending_messages_pulled(pending_ids: list[int], delivered_at: int | Non
             WHERE id IN ({placeholders})
         """,
             (delivered_at, *pending_ids),
+        )
+        conn.commit()
+    for row in session_rows:
+        recount_overflow_session_pending_count(row["session_id"])
+
+
+def mark_pending_messages_uncertain(pending_ids: list[int]):
+    """补拉响应超时时停止重试，并保留“可能已送达”语义。"""
+    if not pending_ids:
+        return
+    placeholders = ",".join("?" for _ in pending_ids)
+    with _lock:
+        conn = _get_conn()
+        session_rows = conn.execute(
+            f"SELECT DISTINCT session_id FROM pending_messages WHERE id IN ({placeholders})",
+            tuple(pending_ids),
+        ).fetchall()
+        conn.execute(
+            f"""
+            UPDATE pending_messages
+            SET status = 'UNCERTAIN', delivered_at = NULL, discarded_at = NULL
+            WHERE id IN ({placeholders}) AND status = 'PENDING'
+        """,
+            tuple(pending_ids),
         )
         conn.commit()
     for row in session_rows:

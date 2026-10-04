@@ -23,6 +23,7 @@ GET_API_ROUTES = {
     "/api/status": api_handlers.handle_status,
     "/api/contacts": api_handlers.handle_contacts,
     "/api/messages": api_handlers.handle_messages,
+    "/api/delivery": api_handlers.handle_delivery,
     "/api/weather/query": api_handlers.handle_weather_query_get,
     "/api/ai_config": api_handlers.handle_get_ai_config,
     "/api/qr_status": api_handlers.handle_qr_status,

@@ -56,6 +56,7 @@ def _env_int(name: str, default: int) -> int:
 
 VIDEO_MEDIA_RETENTION_HOURS = _env_int("VIDEO_MEDIA_RETENTION_HOURS", 168)
 VIDEO_MEDIA_CLEANUP_INTERVAL_SECONDS = _env_int("VIDEO_MEDIA_CLEANUP_INTERVAL_SECONDS", 3600)
+FILE_MEDIA_MAX_BYTES = max(1024, _env_int("FILE_MEDIA_MAX_BYTES", 20 * 1024 * 1024))
 
 MSG_TYPE_MAP = {
     1: "文本",
@@ -332,10 +333,12 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
 
     # ── 持久化与状态 ──
 
-    def _record_message(self, msg_dict: dict):
+    def _record_message(self, msg_dict: dict) -> bool:
         """将消息同时写入内存缓存和 SQLite 持久化存储。"""
+        if not self.db.save_message(msg_dict):
+            return False
         self.recent_messages.append(msg_dict)
-        self.db.save_message(msg_dict)
+        return True
 
     def _save_outbound_image(self, file_data: bytes) -> str:
         media._ensure_media_dir(self._media_dir)
@@ -371,6 +374,18 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         with open(save_path, "wb") as fh:
             fh.write(file_data)
         return filename
+
+    def _copy_outbound_file(self, filepath: str, file_name: str = "") -> tuple[str, str]:
+        media._ensure_media_dir(self._media_dir)
+        source_path = os.path.abspath(filepath)
+        if not os.path.isfile(source_path):
+            raise FileNotFoundError(f"文件不存在: {source_path}")
+        base_name = os.path.basename(file_name or source_path).strip() or "file.bin"
+        safe_name = "".join("_" if ch in '/\\\x00' or ord(ch) < 32 else ch for ch in base_name)[:120]
+        filename = f"out_file_{int(time.time())}_{uuid.uuid4().hex[:8]}_{safe_name or 'file.bin'}"
+        save_path = os.path.join(self._media_dir, filename)
+        shutil.copyfile(source_path, save_path)
+        return filename, save_path
 
     def _blocked_non_replayable_send(
         self,
@@ -641,8 +656,37 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 voice_text = item.get("voice_item", {}).get("text", "")
                 parts.append(f"[语音] {voice_text}" if voice_text else "[语音]")
             elif item_type == 4:
-                file_name = item.get("file_item", {}).get("file_name", "未知文件")
-                parts.append(f"[文件: {file_name}]")
+                file_item = item.get("file_item") or {}
+                file_name = os.path.basename(str(file_item.get("file_name") or "未知文件"))
+                try:
+                    declared_size = int(file_item.get("len") or "0")
+                except (TypeError, ValueError):
+                    declared_size = 0
+                if declared_size > FILE_MEDIA_MAX_BYTES:
+                    parts.append(f"[文件过大:{file_name}]")
+                    logger.warning("文件超过接收上限: name=%s size=%d", file_name, declared_size)
+                    continue
+                file_info = media.extract_pic_info(file_item)
+                if file_info:
+                    msg_id = msg.get("msg_id", str(time.time()))
+                    filepath = media.download_and_decrypt_media(
+                        encrypted_query_param=file_info["encrypted_query_param"],
+                        aes_key_b64=file_info["aes_key"],
+                        msg_id=msg_id,
+                        media_type="file",
+                        media_dir=self._media_dir,
+                        max_bytes=FILE_MEDIA_MAX_BYTES,
+                    )
+                    if filepath:
+                        filename = os.path.basename(filepath)
+                        parts.append(f"[文件:{file_name}]")
+                        msg.setdefault("_media_paths", []).append(filename)
+                        logger.info("文件已解码保存: name=%s cache=%s", file_name, filename)
+                    else:
+                        parts.append(f"[文件下载失败:{file_name}]")
+                else:
+                    parts.append(f"[文件缺少解密参数:{file_name}]")
+                    logger.warning("file_item 缺少解密参数: keys=%s", list(file_item.keys()))
             elif item_type == 5:
                 logger.info("【媒体诊断】收到视频 item: %s", json.dumps(item, ensure_ascii=False)[:500])
                 video_item = item.get("video_item") or {}
@@ -883,7 +927,16 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
 
     # ── 发送消息 ──
 
-    def send(self, to: str, text: str, *, source: str = "api", title: str = "") -> dict:
+    def send(
+        self,
+        to: str,
+        text: str,
+        *,
+        source: str = "api",
+        title: str = "",
+        allow_buffer: bool = True,
+        request_id: str = "",
+    ) -> dict:
         """
         发送消息的高级接口。
         to: 可以是 user_id，也可以是联系人名称。
@@ -894,6 +947,23 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 return {"ok": False, "error": "缺少收件人。iLink 限制：对方需先给你发一条消息，系统才能获取其 user_id"}
             return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
 
+        normalized_request_id = self._normalize_request_id(request_id)
+        if request_id and not normalized_request_id:
+            return {
+                "ok": False,
+                "delivery_stage": "failed",
+                "message_id": None,
+                "pending_message_id": None,
+                "blocked_reason": "invalid_request_id",
+                "overflow_session_id": None,
+                "error": "request_id 格式无效",
+            }
+        request_fingerprint = self._delivery_request_fingerprint(user_id, text, source, title)
+        if normalized_request_id:
+            existing = self._existing_request_delivery(normalized_request_id, request_fingerprint)
+            if existing is not None:
+                return existing
+
         return self._send_resolved(
             user_id=user_id,
             contact_name=self._contact_name(user_id, to),
@@ -901,9 +971,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             context_token=self.get_context_token(user_id),
             source=source,
             title=title,
-            allow_buffer=True,
+            allow_buffer=allow_buffer,
             rotate_session_on_warn=True,
             record_timeline=True,
+            message_id=normalized_request_id or None,
+            request_fingerprint=request_fingerprint if normalized_request_id else None,
         )
 
     def send_typing(self, to: str) -> dict:
@@ -1059,6 +1131,50 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             source="file",
             media_label="文件",
             send_action=_send_file,
+            media_name_getter=lambda: filename,
+        )
+        if result.get("ok"):
+            result["file_name"] = display_name
+        return result
+
+    def send_file_path(self, to: str, filepath: str, *, file_name: str = "", text: str = "") -> dict:
+        """从文件路径发送附件消息，避免原文件整体读入内存。"""
+        user_id = self.find_user_id(to)
+        if not user_id:
+            return {"ok": False, "error": f"找不到联系人「{to}」。对方需先给你发过消息才会出现在联系人列表中"}
+
+        display_name = os.path.basename(file_name or filepath or "file.bin") or "file.bin"
+        context_token = self.get_context_token(user_id)
+        filename = None
+
+        def _send_file_path():
+            nonlocal filename
+            filename, save_path = self._copy_outbound_file(filepath, display_name)
+            if hasattr(self.client, "send_file_path"):
+                return self.client.send_file_path(
+                    user_id,
+                    save_path,
+                    context_token,
+                    file_name=display_name,
+                    text=text,
+                )
+            with open(save_path, "rb") as fh:
+                return self.client.send_file(
+                    user_id,
+                    fh.read(),
+                    context_token,
+                    file_name=display_name,
+                    text=text,
+                )
+
+        result = self._send_non_replayable_resolved(
+            user_id=user_id,
+            contact_name=self._contact_name(user_id, to),
+            record_text=f"{text}\n[文件:{display_name}]" if text else f"[文件:{display_name}]",
+            context_token=context_token,
+            source="file",
+            media_label="文件",
+            send_action=_send_file_path,
             media_name_getter=lambda: filename,
         )
         if result.get("ok"):

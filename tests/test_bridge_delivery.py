@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import requests
 
@@ -30,6 +31,7 @@ class _FakeClient:
         self.sent_video_paths = []
         self.sent_voices = []
         self.sent_files = []
+        self.sent_file_paths = []
         self.sent_references = []
         self.file_error = None
         self.reference_error = None
@@ -66,6 +68,13 @@ class _FakeClient:
             raise self.file_error
         self.sent_files.append((to_user_id, len(file_data), context_token, file_name, text))
         return {"to_user_id": to_user_id, "size": len(file_data), "file_name": file_name}
+
+    def send_file_path(self, to_user_id: str, filepath: str, context_token: str = "", file_name: str = "", text: str = "") -> dict:
+        if self.file_error:
+            raise self.file_error
+        size = os.path.getsize(filepath)
+        self.sent_file_paths.append((to_user_id, filepath, size, context_token, file_name, text))
+        return {"to_user_id": to_user_id, "size": size, "file_name": file_name}
 
     def send_reference_text(self, to_user_id: str, text: str, context_token: str = "", ref_text: str = "", ref_title: str = "") -> dict:
         if self.reference_error:
@@ -113,6 +122,7 @@ class BridgeDeliveryTests(unittest.TestCase):
         result = self.bridge.send("Alice", "hello-10")
         self.assertTrue(result["ok"])
         self.assertTrue(result["warning"])
+        self.assertEqual(result["blocked_reason"], "quota_10")
         self.assertIn("## ⚠️ 微信 bot 10 条上限", self.client.sent_texts[-1][1])
         self.assertIn("- 回复任意内容恢复消息发送", self.client.sent_texts[-1][1])
 
@@ -122,6 +132,93 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(summary["pending_count"], 0)
         self.assertIsNotNone(summary["active_overflow_session_id"])
 
+    def test_direct_send_returns_queryable_delivery_contract(self):
+        result = self.bridge.send("Alice", "hello-direct")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["delivery_stage"], "direct")
+        self.assertIsNotNone(result["message_id"])
+        self.assertIsNone(result["pending_message_id"])
+        self.assertIsNone(result["blocked_reason"])
+        self.assertIsNone(result["overflow_session_id"])
+
+        message = self.bridge.db.get_message_by_msg_id(result["message_id"])
+        self.assertIsNotNone(message)
+        self.assertEqual(message["delivery_stage"], "direct")
+
+    def test_request_id_is_idempotent_and_rejects_payload_conflict(self):
+        first = self.bridge.send("Alice", "hello-once", request_id="nh_request_001")
+        repeated = self.bridge.send("Alice", "hello-once", request_id="nh_request_001")
+        conflict = self.bridge.send("Alice", "different", request_id="nh_request_001")
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["message_id"], "nh_request_001")
+        self.assertTrue(repeated["ok"])
+        self.assertTrue(repeated["deduplicated"])
+        self.assertEqual(repeated["message_id"], first["message_id"])
+        self.assertEqual(len(self.client.sent_texts), 1)
+        self.assertFalse(conflict["ok"])
+        self.assertEqual(conflict["blocked_reason"], "idempotency_conflict")
+
+    def test_invalid_request_id_is_rejected_before_send(self):
+        result = self.bridge.send("Alice", "hello", request_id="bad request id")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["blocked_reason"], "invalid_request_id")
+        self.assertEqual(self.client.sent_texts, [])
+
+    def test_persistence_failure_does_not_claim_queryable_direct_delivery(self):
+        with patch.object(self.bridge.db, "save_message", return_value=False):
+            result = self.bridge.send("Alice", "hello", request_id="nh_persist_001")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["delivery_stage"], "uncertain")
+        self.assertIsNone(result["message_id"])
+        self.assertEqual(result["blocked_reason"], "local_persistence")
+        self.assertIsNone(self.bridge.db.get_message_by_msg_id("nh_persist_001"))
+
+    def test_extract_text_downloads_file_attachment_with_limit(self):
+        cached = Path(self.bridge._media_dir) / "cached.bin"
+        cached.write_bytes(b"PK\x03\x04ebook")
+        msg = {
+            "msg_id": "msg-file",
+            "item_list": [
+                {
+                    "type": 4,
+                    "file_item": {
+                        "file_name": "My Book.epub",
+                        "len": str(cached.stat().st_size),
+                        "media": {"encrypt_query_param": "download-ref", "aes_key": "key"},
+                    },
+                }
+            ],
+        }
+
+        with (
+            patch.object(
+                bridge_module.media,
+                "extract_pic_info",
+                return_value={"encrypted_query_param": "download-ref", "aes_key": "key"},
+            ),
+            patch.object(
+                bridge_module.media,
+                "download_and_decrypt_media",
+                return_value=str(cached),
+            ) as mock_download,
+        ):
+            text = self.bridge._extract_text(msg)
+
+        self.assertEqual(text, "[文件:My Book.epub]")
+        self.assertEqual(msg["_media_paths"], ["cached.bin"])
+        mock_download.assert_called_once_with(
+            encrypted_query_param="download-ref",
+            aes_key_b64="key",
+            msg_id="msg-file",
+            media_type="file",
+            media_dir=self.bridge._media_dir,
+            max_bytes=bridge_module.FILE_MEDIA_MAX_BYTES,
+        )
+
     def test_eleventh_message_is_buffered(self):
         for idx in range(10):
             result = self.bridge.send("Alice", f"hello-{idx}")
@@ -130,6 +227,11 @@ class BridgeDeliveryTests(unittest.TestCase):
         result = self.bridge.send("Alice", "hello-11")
         self.assertTrue(result["ok"])
         self.assertTrue(result["buffered"])
+        self.assertEqual(result["delivery_stage"], "buffered")
+        self.assertIsNotNone(result["message_id"])
+        self.assertIsNotNone(result["pending_message_id"])
+        self.assertEqual(result["blocked_reason"], "quota_10")
+        self.assertIsNotNone(result["overflow_session_id"])
 
         summary = self.bridge.get_delivery_summary("uid-1")
         self.assertEqual(summary["status"], "BUFFERING")
@@ -139,11 +241,12 @@ class BridgeDeliveryTests(unittest.TestCase):
         buffered = [message for message in messages if message["delivery_stage"] == "buffered"]
         self.assertEqual(len(buffered), 1)
         self.assertEqual(buffered[0]["meta"]["blocked_reason"], "quota_10")
+        self.assertEqual(buffered[0]["msg_id"], result["message_id"])
 
     def test_pull_drains_buffered_messages_after_recovery(self):
         for idx in range(10):
             self.bridge.send("Alice", f"hello-{idx}")
-        self.bridge.send("Alice", "hello-11")
+        buffered_result = self.bridge.send("Alice", "hello-11")
 
         self.bridge._mark_user_recovered("uid-1", int(time.time()))
         result = self.bridge.pull_pending_messages("uid-1")
@@ -153,6 +256,10 @@ class BridgeDeliveryTests(unittest.TestCase):
         summary = self.bridge.get_delivery_summary("uid-1")
         self.assertEqual(summary["status"], "DRAINED")
         self.assertEqual(summary["pending_count"], 0)
+
+        buffered_message = self.bridge.db.get_message_by_msg_id(buffered_result["message_id"])
+        self.assertIsNotNone(buffered_message)
+        self.assertEqual(buffered_message["delivery_stage"], "pulled")
 
         messages = db.get_messages(limit=20)
         self.assertTrue(any(message["delivery_stage"] == "pulled" for message in messages))
@@ -165,6 +272,29 @@ class BridgeDeliveryTests(unittest.TestCase):
                 for message in messages
             )
         )
+
+    def test_pull_timeout_is_uncertain_and_not_requeued_or_marked_pulled(self):
+        for idx in range(10):
+            self.bridge.send("Alice", f"hello-{idx}")
+        buffered_result = self.bridge.send("Alice", "hello-11")
+        pending_id = buffered_result["pending_message_id"]
+        self.bridge._mark_user_recovered("uid-1", int(time.time()))
+
+        def _raise_timeout(to_user_id: str, text: str, context_token: str = "") -> dict:
+            raise requests.exceptions.ReadTimeout("Read timed out.")
+
+        self.client.send_text = _raise_timeout
+        result = self.bridge.pull_pending_messages("uid-1")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["uncertain_pending_ids"], [pending_id])
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(self.bridge.db.get_pending_message(pending_id)["status"], "UNCERTAIN")
+        self.assertEqual(
+            self.bridge.db.get_message_by_msg_id(buffered_result["message_id"])["delivery_stage"],
+            "uncertain",
+        )
+        self.assertEqual(self.bridge.pull_pending_messages("uid-1")["empty"], True)
 
     def test_bot_account_is_recorded_on_token_restore(self):
         account = db.get_bot_account("bot-test")
@@ -453,6 +583,39 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(summary["blocked_reason"], "window_24h")
         self.assertEqual(summary["pending_count"], 1)
 
+    def test_window_expired_message_does_not_buffer_when_disabled(self):
+        self.bridge.activity_tracker["uid-1"] = {
+            "last_receive_time": int(time.time()) - WINDOW_DEADLINE_SECONDS - 60,
+            "reminded": False,
+        }
+
+        result = self.bridge.send("Alice", "late-message", allow_buffer=False)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["delivery_stage"], "failed")
+        self.assertEqual(result["blocked_reason"], "window_24h")
+        self.assertIn("24 小时", result["error"])
+        self.assertEqual(self.client.sent_texts, [])
+        self.assertEqual(self.bridge.get_delivery_summary("uid-1")["pending_count"], 0)
+
+    def test_discarded_buffered_message_is_queryable_by_message_id(self):
+        now_ts = int(time.time())
+        self.bridge.activity_tracker["uid-1"] = {
+            "last_receive_time": now_ts - WINDOW_DEADLINE_SECONDS - 60,
+            "reminded": False,
+        }
+        buffered_result = self.bridge.send("Alice", "expired-buffered-message")
+
+        cleanup_result = self.bridge.cleanup_expired_pending_messages(
+            now_ts=now_ts + 73 * 3600,
+            force=True,
+        )
+
+        self.assertEqual(cleanup_result["expired"], 1)
+        message = self.bridge.db.get_message_by_msg_id(buffered_result["message_id"])
+        self.assertIsNotNone(message)
+        self.assertEqual(message["delivery_stage"], "discarded")
+
     def test_window_expired_images_are_buffered(self):
         self.bridge.activity_tracker["uid-1"] = {
             "last_receive_time": int(time.time()) - WINDOW_DEADLINE_SECONDS - 60,
@@ -620,6 +783,11 @@ class BridgeDeliveryTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["uncertain"])
+        self.assertEqual(result["delivery_stage"], "uncertain")
+        self.assertIsNotNone(result["message_id"])
+        self.assertIsNone(result["pending_message_id"])
+        self.assertIsNone(result["blocked_reason"])
+        self.assertIsNone(result["overflow_session_id"])
         summary = self.bridge.get_delivery_summary("uid-1")
         self.assertEqual(summary["status"], "NORMAL")
         self.assertEqual(summary["consecutive_send_count"], 1)
@@ -629,6 +797,7 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.assertEqual(len(uncertain), 1)
         self.assertEqual(uncertain[0]["text"], "hello-timeout")
         self.assertTrue(uncertain[0]["meta"]["delivery_uncertain"])
+        self.assertEqual(uncertain[0]["msg_id"], result["message_id"])
 
     def test_unknown_command_can_be_handed_off_to_webhook(self):
         triggered = []
@@ -783,6 +952,43 @@ class BridgeDeliveryTests(unittest.TestCase):
         summary = self.bridge.get_delivery_summary("uid-1")
         self.assertEqual(summary["status"], "BUFFERING")
         self.assertEqual(summary["pending_count"], 0)
+
+    def test_send_file_path_success_records_media(self):
+        source_path = Path(self.tempdir.name) / "source.epub"
+        source_path.write_bytes(b"PK\x03\x04ebook")
+
+        result = self.bridge.send_file_path("Alice", str(source_path), file_name="../bad/name.epub", text="公版书")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(source_path.exists())
+        self.assertEqual(len(self.client.sent_file_paths), 1)
+        sent_uid, sent_path, sent_size, sent_context, sent_name, sent_text = self.client.sent_file_paths[0]
+        self.assertEqual(sent_uid, "uid-1")
+        self.assertEqual(sent_size, source_path.stat().st_size)
+        self.assertEqual(sent_context, "ctx-1")
+        self.assertEqual(sent_name, "name.epub")
+        self.assertEqual(sent_text, "公版书")
+        self.assertNotEqual(sent_path, str(source_path))
+        self.assertTrue(Path(sent_path).exists())
+        messages = db.get_messages(limit=10)
+        file_records = [m for m in messages if m["type"] == "send" and m["media"]]
+        self.assertEqual(len(file_records), 1)
+        self.assertIn("[文件:name.epub]", file_records[0]["text"])
+        self.assertTrue(file_records[0]["media"].startswith("out_file_"))
+
+    def test_send_file_path_after_quota_is_blocked_without_copy(self):
+        source_path = Path(self.tempdir.name) / "source.epub"
+        source_path.write_bytes(b"PK\x03\x04ebook")
+        for idx in range(10):
+            self.bridge.send("Alice", f"hello-{idx}")
+
+        result = self.bridge.send_file_path("Alice", str(source_path), file_name="book.epub")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"])
+        self.assertEqual(result["blocked_reason"], "quota_10")
+        self.assertEqual(self.client.sent_file_paths, [])
+        self.assertEqual(list(Path(self.bridge._media_dir).glob("out_file_*")), [])
 
     def test_send_file_ret_minus_two_marks_api_limit_without_pending_attachment(self):
         self.client.file_error = RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时")

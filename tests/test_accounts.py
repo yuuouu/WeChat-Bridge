@@ -3,6 +3,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -275,6 +276,64 @@ class AccountManagerTests(unittest.TestCase):
         self.assertIsNone(manager.get_runtime("bot-a"))
         self.assertIsNotNone(manager.get_runtime("bot-b"))
         self.assertFalse(Path(self.tempdir.name, "user-bot-a", "token.json").exists())
+
+    def test_logout_keeps_existing_message_store_queryable_by_exact_account_identity(self):
+        self._write_token("bot-a")
+        manager = AccountManager(
+            self.tempdir.name,
+            client_factory=_FakeLoginClient,
+            bridge_factory=_FakeBridge,
+        )
+        runtime = manager.restore_accounts()[0]
+        store = db.MessageStore(str(Path(runtime.data_dir) / "messages.db"))
+        store.save_message(
+            {
+                "msg_id": "offline-message",
+                "type": "send",
+                "contact": "Alice",
+                "user_id": "alice",
+                "text": "offline state",
+                "time": int(time.time()),
+                "delivery_stage": "discarded",
+            }
+        )
+
+        self.assertTrue(manager.logout("bot-a"))
+
+        by_bot_id = manager.get_account_message_store("bot-a")
+        by_ilink_user_id = manager.get_account_message_store("user-bot-a")
+        self.assertIsNotNone(by_bot_id)
+        self.assertIsNotNone(by_ilink_user_id)
+        self.assertEqual(by_bot_id.get_message_by_msg_id("offline-message")["delivery_stage"], "discarded")
+        self.assertEqual(by_ilink_user_id.get_message_by_msg_id("offline-message")["text"], "offline state")
+
+    def test_account_message_store_rejects_data_dir_outside_data_base(self):
+        manager = AccountManager(
+            self.tempdir.name,
+            client_factory=_FakeLoginClient,
+            bridge_factory=_FakeBridge,
+        )
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside_store = db.MessageStore(str(Path(outside_dir) / "messages.db"))
+            outside_store.save_message(
+                {
+                    "msg_id": "outside-message",
+                    "type": "send",
+                    "contact": "Alice",
+                    "user_id": "alice",
+                    "text": "outside",
+                    "time": 301,
+                }
+            )
+            db.record_bot_account_event(
+                bot_id="bot-outside",
+                ilink_user_id="user-outside",
+                event="logout",
+                data_dir=outside_dir,
+            )
+
+            self.assertIsNone(manager.get_account_message_store("bot-outside"))
+            self.assertIsNone(manager.get_account_message_store("user-outside"))
 
     def test_logout_default_promotes_remaining_account(self):
         self._write_token("bot-a")
