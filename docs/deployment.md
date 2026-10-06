@@ -1,6 +1,8 @@
-# 🛠️ 部署与管理指南
+# WeChat Bridge 部署指南：Docker、macOS、Linux 与 Windows
 
-> 返回 [README](../README.md)
+在 Docker、macOS、Linux 或 Windows 上部署和升级 WeChat Bridge 微信 Bot，并了解本地安装与运行方式。
+
+> 返回 [WeChat Bridge 项目主页](../README.md)
 
 ---
 

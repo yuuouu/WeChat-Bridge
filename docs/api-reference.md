@@ -1,6 +1,8 @@
-# 📡 API 接口参考
+# WeChat Bridge API 参考：发送微信消息与接入 Webhook
 
-> 返回 [README](../README.md)
+使用 WeChat Bridge 的 HTTP API 向微信发送文本或图片，并通过 Webhook 对接外部服务。本文列出接口参数、鉴权要求和调用示例。
+
+> 返回 [WeChat Bridge 项目主页](../README.md)
 
 ---
 
@@ -283,13 +285,16 @@ curl http://localhost:5200/api/status
 | `PENDING_TIME_SENSITIVE_TTL_HOURS` | `24` | 行情、保活、设备上下线等时效缓存消息保留小时数 |
 | `PENDING_MEDIA_TTL_HOURS` | `168` | 图片等媒体缓存消息保留小时数 |
 | `PENDING_CLEANUP_INTERVAL_SECONDS` | `3600` | 过期缓存后台清理间隔；启动时也会立即清理一次 |
+| `ILINK_BOT_AGENT` | `WeChat-Bridge/<版本>` | 上送给 iLink 的可观测客户端标识；仅接受安全的 UA 风格 ASCII token |
+| `ILINK_ROUTE_TAG` | 空 | iLink 部署提供的可选 `SKRouteTag`；未配置时不发送 |
+| `ILINK_ENFORCE_LOCAL_SESSION_WINDOW` | `0` | 是否启用旧版 24h 本地预判；默认由服务端按 `context_token` 实际状态决定 |
 | `TZ` | `Asia/Shanghai` | 容器时区 |
 
 ---
 
 ## 🧹 缓存消息清理策略
 
-当消息因 24h 窗口、连续 10 条限制或上游限制无法投递时，会进入 `pending_messages`，等待用户回复后通过 `/pull` 补拉。为避免旧行情、保活提醒、路由器上下线通知长期堆积，服务会自动清理过期缓存：
+当消息因动态会话上下文失效、连续 10 条限制或其他上游限制无法投递时，会进入 `pending_messages`，等待用户回复后通过 `/pull` 补拉。为避免旧行情、保活提醒、路由器上下线通知长期堆积，服务会自动清理过期缓存：
 
 | 类型 | 默认 TTL | 判定方式 |
 |---|---:|---|

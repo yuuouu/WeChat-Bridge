@@ -2,6 +2,26 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [1.4.0] - 2026-10-06
+
+### Added
+- 对齐腾讯 `openclaw-weixin` 2.4.9：新版 POST 二维码请求、配对码验证、`binded_redirect`、`bot_agent`、`SKRouteTag` 与动态长轮询超时
+- 新增 `notifyStart` / `notifyStop` 生命周期通知、`-14` token 冷却保护和网络错误分类
+- 新增入站语音落盘、无损 `message_id` 选择、ID-only 引用缓存还原和局部引用解析
+- CDN 上传增加最多三次重试，并把上游受理与微信端实际送达分开记录
+
+### Changed
+- iLink 协议身份升级至 2.4.9，WeChat Bridge 版本升级至 1.4.0
+- 默认不再用固定 24 小时窗口提前阻断发送；会话有效期以服务端 `context_token` 判定为准
+- `ret=-2` 统一解释为动态会话上下文失效或上游发送限制，不再断言固定 TTL
+- 二维码请求的 `local_token_list` 默认保持为空，避免在未明确授权时把既有凭据发送给外部服务
+
+### Fixed
+- 正确识别 iLink `errcode=-14`，避免把陈旧 token 当成普通轮询失败持续请求
+- `ret=0` 不再等同于端到端送达，消息状态记录为 `accepted_unconfirmed`
+
+---
+
 ## [1.3.0] - 2026-05-28
 
 ### Added

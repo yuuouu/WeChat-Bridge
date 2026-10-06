@@ -4,7 +4,11 @@
 
 **把微信 Bot 变成可编程的 HTTP 消息通道**
 
+**Open-source Python bridge for WeChat Bot messages: send via HTTP API, receive via Webhook, and deploy with Docker.**
+
 **轻量 · 数据主权 · 跨平台开箱即用**
+
+[项目官网](https://wg.yuuou.qzz.io/) · [API 文档](docs/api-reference.md) · [部署指南](docs/deployment.md)
 
 <img src="docs/assets/banner.png" alt="WeChat Bridge" width="240">
 
@@ -12,19 +16,12 @@
 
 ---
 
-## 通过微信远程操控 AI CLI
+WeChat Bridge 使用 HTTP API 把服务器、NAS 和自动化服务的通知发送到微信，也能通过 Webhook 把微信消息交给外部服务处理。
 
-在手机微信里向 Bot 发指令，即可驱动运行在电脑上的 AI CLI（Gemini / Claude Code / Codex）执行代码分析、单测生成、架构问答等任务——无需远程连接电脑，随时随地进行代码审查。直接向 Bot 发消息，AI CLI 在电脑上执行，结果实时回传微信
-
-- `/code <项目名>` 进入指定项目的 AI 会话，Bot 立即回传"已进入"确认
-- `/switch gemini / claude / codex` 随时切换 AI 后端，session 自动重置
-- `/exit` 关闭会话
-
-<div align="center">
-  <img src="docs/assets/code-agent.png" alt="通过微信远程操控 AI CLI 示例" width="360">
-</div>
-
-详见 [Bridge Code Agent](docs/bridge-code-agent.md)
+- [通过 HTTP API 发送微信消息](docs/api-reference.md)：接口参数、鉴权与调用示例
+- [通过 Webhook 接收微信消息并异步回写](docs/webhook-async-reply.md)：双向消息流程与调试
+- [使用 Docker 或安装脚本部署微信 Bot](docs/deployment.md)：部署、升级与管理
+- [通过微信远程操控 AI CLI](docs/bridge-code-agent.md)：Gemini、Claude Code 与 Codex
 
 ---
 
@@ -162,6 +159,22 @@ curl "https://bot.example.com/api/send?token=change-this-token&to=好友名称&t
 
 ---
 
+## 通过微信远程操控 AI CLI
+
+在手机微信里向 Bot 发指令，即可驱动运行在电脑上的 AI CLI（Gemini / Claude Code / Codex）执行代码分析、单测生成、架构问答等任务——无需远程连接电脑，随时随地进行代码审查。直接向 Bot 发消息，AI CLI 在电脑上执行，结果实时回传微信
+
+- `/code <项目名>` 进入指定项目的 AI 会话，Bot 立即回传"已进入"确认
+- `/switch gemini / claude / codex` 随时切换 AI 后端，session 自动重置
+- `/exit` 关闭会话
+
+<div align="center">
+  <img src="docs/assets/code-agent.png" alt="通过微信远程操控 AI CLI 示例" width="360">
+</div>
+
+详见 [Bridge Code Agent](docs/bridge-code-agent.md)
+
+---
+
 ## 核心能力
 
 - **标准 HTTP API**：`/api/send`、`/api/send_image`、`/api/push`、`/api/webhook`、`/api/ai_analyze`、`/api/contacts`、`/api/status`
@@ -236,10 +249,12 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 | 限制项 | 影响 |
 |---|---|
 | 需主动发消息 | 只有用户先给 Bot 发过消息，系统才能获取 `user_id` 并主动发送 |
-| 24 小时会话窗口 | 用户最后一条消息超过 24 小时后，Bot 不能主动下发消息，需要用户重新发一条消息恢复通道 |
+| 动态会话窗口 | 下发依赖最近入站消息的 `context_token`；有效期由 iLink 服务端控制，没有稳定的固定 TTL，失效后需要用户重新互动 |
 | 连续 10 条限制 | Bot 连续发送 10 条消息后，若用户未回复，继续发送会被阻断；用户回复任意内容后计数重置 |
 
 项目已把这些限制产品化处理：保活提醒、第 10 条末尾提醒、受阻消息缓存、`/pull` 补拉、投递状态标签，能降低丢消息概率，但不能突破接口规则。
+
+从 1.4.0 起，Bridge 默认不再用本地“24 小时”计时器提前阻断发送，而是以 iLink 的实际业务响应为准。`ret=0` 只记录为“上游已受理、送达未确认”；如确需旧版保守策略，可设置 `ILINK_ENFORCE_LOCAL_SESSION_WINDOW=1`。
 
 缓存消息不会无限期保留。默认清理策略是：普通缓存 72 小时后标记为 `DISCARDED`，行情、保活、设备上下线等时效消息 24 小时后标记为 `DISCARDED`，图片缓存保留 7 天。清理只改变投递状态，不物理删除历史记录；可通过 `PENDING_MESSAGE_TTL_HOURS`、`PENDING_TIME_SENSITIVE_TTL_HOURS`、`PENDING_MEDIA_TTL_HOURS` 调整，设置为 `0` 表示不自动过期。
 

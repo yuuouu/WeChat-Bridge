@@ -3,6 +3,12 @@ name = "wechat-bridge"
 version = "1.4.0"
 requires-python = ">=3.10"
 
+[project.urls]
+Homepage = "https://wg.yuuou.qzz.io/"
+Documentation = "https://github.com/yuuouu/WeChat-Bridge/tree/main/docs"
+Repository = "https://github.com/yuuouu/WeChat-Bridge"
+Issues = "https://github.com/yuuouu/WeChat-Bridge/issues"
+
 [tool.ruff]
 target-version = "py310"
 line-length = 120

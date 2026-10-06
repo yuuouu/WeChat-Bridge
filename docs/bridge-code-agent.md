@@ -1,8 +1,8 @@
-# 🤖 Bridge Code Agent
+# Bridge Code Agent：通过微信远程操控 AI CLI
 
-> 返回 [README](../README.md)
+> 返回 [WeChat Bridge 项目主页](../README.md)
 
-通过微信远程操控运行在电脑上的 AI CLI（Gemini / Claude Code / Codex），实现随时随地的代码审查、修改、构建等操作。
+通过 WeChat Bridge 在微信中远程操控运行在电脑上的 AI CLI（Gemini / Claude Code / Codex），执行代码审查、修改和构建等操作。
 
 ---
 
