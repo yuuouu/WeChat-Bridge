@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 MAX_CONSECUTIVE_SENDS = 10
 WINDOW_DEADLINE_SECONDS = 24 * 3600
+ENFORCE_LOCAL_SESSION_WINDOW = os.environ.get("ILINK_ENFORCE_LOCAL_SESSION_WINDOW", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 PULL_CHUNK_LIMIT = int(os.environ.get("PULL_CHUNK_LIMIT", "5200"))
 PENDING_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("PENDING_CLEANUP_INTERVAL_SECONDS", "3600"))
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -84,6 +89,9 @@ class DeliveryMixin:
         return max(last_state, last_activity)
 
     def _is_window_expired(self, user_id: str, state: dict | None = None, now_ts: int | None = None) -> bool:
+        # 2.4.x 没有承诺固定 TTL；默认交给服务端依据 context_token 判定。
+        if not ENFORCE_LOCAL_SESSION_WINDOW:
+            return False
         now_ts = now_ts or int(time.time())
         last_user_at = self._last_user_message_at(user_id, state)
         if not last_user_at:
@@ -180,7 +188,7 @@ class DeliveryMixin:
 
     def _is_window_limit_error(self, exc: Exception) -> bool:
         message = str(exc)
-        return "ret=-2" in message or "24小时" in message or "24 小时" in message
+        return "ret=-2" in message or "context" in message.lower() or "会话上下文" in message
 
     def _is_delivery_uncertain_error(self, exc: Exception) -> bool:
         return isinstance(exc, requests.exceptions.ReadTimeout) or "Read timed out" in str(exc)
@@ -625,8 +633,19 @@ class DeliveryMixin:
                 return self._blocked_delivery_result("send_error", str(exc))
 
             saved_message_id = None
+            upstream_unconfirmed = isinstance(result, dict) and result.get("_delivery_confirmed") is False
+            effective_delivery_stage = (
+                "accepted_unconfirmed"
+                if upstream_unconfirmed and delivery_stage_on_success == "direct"
+                else delivery_stage_on_success
+            )
             if record_timeline:
                 resolved_meta = dict(extra_meta or {})
+                if upstream_unconfirmed:
+                    resolved_meta["upstream_delivery_state"] = result.get("_delivery_state")
+                    resolved_meta["delivery_confirmed"] = False
+                    if result.get("_server_message_id"):
+                        resolved_meta["server_message_id"] = result["_server_message_id"]
                 if warning_appended:
                     resolved_meta["limit_warning"] = True
                     resolved_meta["blocked_reason"] = "quota_10"
@@ -635,7 +654,7 @@ class DeliveryMixin:
                     user_id=user_id,
                     text=final_text,
                     msg_prefix="s",
-                    delivery_stage=delivery_stage_on_success,
+                    delivery_stage=effective_delivery_stage,
                     overflow_session_id=active_session_id if warning_appended else None,
                     source=source,
                     title=title,
@@ -674,7 +693,7 @@ class DeliveryMixin:
                 "ok": True,
                 "result": result,
                 "warning": warning_appended,
-                "delivery_stage": delivery_stage_on_success,
+                "delivery_stage": effective_delivery_stage,
                 "message_id": saved_message_id,
                 "pending_message_id": None,
                 "blocked_reason": blocked_reason,

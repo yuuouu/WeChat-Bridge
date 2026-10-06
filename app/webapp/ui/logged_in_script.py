@@ -712,6 +712,7 @@ UID: ${account.ilink_user_id || '—'}`;
       if (m.meta && m.meta.blocked_reason === 'window_24h') tags.push('<span class="msg-tag warning">24h失效</span>');
       if (m.meta && m.meta.blocked_reason === 'quota_10') tags.push('<span class="msg-tag warning">10条限制</span>');
       if (m.meta && m.meta.blocked_reason === 'api_limit') tags.push('<span class="msg-tag warning">上游限制</span>');
+      if (m.delivery_stage === 'accepted_unconfirmed') tags.push('<span class="msg-tag warning">已受理·未确认</span>');
       if (m.media) {
         const mediaUrl = apiUrl('/media/' + encodeURIComponent(m.media));
         const isVideo = /\.(mp4|mov|webm|3gp|avi|ts|flv)$/i.test(m.media);

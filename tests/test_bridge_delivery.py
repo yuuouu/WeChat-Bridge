@@ -18,6 +18,7 @@ install_crypto_stub()
 import bridge as bridge_module
 import config as cfg
 import db
+import delivery as delivery_module
 from bridge import WINDOW_DEADLINE_SECONDS
 
 
@@ -96,6 +97,8 @@ class BridgeDeliveryTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self._old_data_dir = os.environ.get("DATA_DIR")
         self._old_config_file = cfg.CONFIG_FILE
+        self._old_enforce_window = delivery_module.ENFORCE_LOCAL_SESSION_WINDOW
+        delivery_module.ENFORCE_LOCAL_SESSION_WINDOW = True
         os.environ["DATA_DIR"] = self.tempdir.name
         cfg.CONFIG_FILE = str(Path(self.tempdir.name) / "ai_config.json")
         cfg.save_config(cfg.DEFAULT_CONFIG.copy())
@@ -108,6 +111,7 @@ class BridgeDeliveryTests(unittest.TestCase):
 
     def tearDown(self):
         db.close_db()
+        delivery_module.ENFORCE_LOCAL_SESSION_WINDOW = self._old_enforce_window
         if self._old_data_dir is None:
             os.environ.pop("DATA_DIR", None)
             bridge_module.DATA_BASE = "./data"
@@ -153,6 +157,59 @@ class BridgeDeliveryTests(unittest.TestCase):
         message = self.bridge.db.get_message_by_msg_id(result["message_id"])
         self.assertIsNotNone(message)
         self.assertEqual(message["delivery_stage"], "direct")
+
+    def test_server_accepted_response_is_not_reported_as_confirmed_delivery(self):
+        def accepted_only(to_user_id, text, context_token=""):
+            self.client.sent_texts.append((to_user_id, text, context_token))
+            return {"ret": 0, "_delivery_state": "accepted_unconfirmed", "_delivery_confirmed": False}
+
+        self.client.send_text = accepted_only
+        result = self.bridge.send("Alice", "accepted-only")
+
+        self.assertEqual(result["delivery_stage"], "accepted_unconfirmed")
+        saved = self.bridge.db.get_message_by_msg_id(result["message_id"])
+        self.assertFalse(saved["meta"]["delivery_confirmed"])
+
+    def test_fixed_session_window_is_disabled_by_default_mode(self):
+        self.bridge.activity_tracker["uid-1"] = {
+            "last_receive_time": int(time.time()) - WINDOW_DEADLINE_SECONDS - 60,
+            "reminded": False,
+        }
+        with patch.object(delivery_module, "ENFORCE_LOCAL_SESSION_WINDOW", False):
+            result = self.bridge.send("Alice", "server-decides-window")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result.get("buffered", False))
+
+    def test_id_only_quote_is_restored_from_message_history(self):
+        self.bridge.process_message(
+            {
+                "message_id": "18446744073709551615",
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "context_token": "ctx-first",
+                "item_list": [{"type": 1, "text_item": {"text": "原始内容"}}],
+            }
+        )
+        self.bridge.process_message(
+            {
+                "message_id": "18446744073709551616",
+                "message_type": 1,
+                "from_user_id": "uid-1",
+                "context_token": "ctx-second",
+                "item_list": [
+                    {
+                        "type": 1,
+                        "text_item": {"text": "继续讨论"},
+                        "ref_msg": {"svr_id": "18446744073709551615"},
+                    }
+                ],
+            }
+        )
+
+        saved = self.bridge.db.get_message_by_msg_id("18446744073709551616")
+        self.assertIn("[引用:原始内容]", saved["text"])
+        self.assertEqual(saved["meta"]["reference"]["source"], "cache")
 
     def test_request_id_is_idempotent_and_rejects_payload_conflict(self):
         first = self.bridge.send("Alice", "hello-once", request_id="nh_request_001")

@@ -8,6 +8,7 @@ from __future__ import annotations
 - 管理消息缓存会话与 /pull 补拉
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ from event_bus import (
     Event,
     EventBus,
 )
-from ilink import ILinkClient, format_reference_fallback_text
+from ilink import ILinkClient, ILinkSessionPausedError, format_reference_fallback_text
 from keepalive import KeepaliveMixin
 from plugin_base import PluginRegistry
 from webhook_manager import discover_and_register_plugins
@@ -57,6 +58,7 @@ def _env_int(name: str, default: int) -> int:
 VIDEO_MEDIA_RETENTION_HOURS = _env_int("VIDEO_MEDIA_RETENTION_HOURS", 168)
 VIDEO_MEDIA_CLEANUP_INTERVAL_SECONDS = _env_int("VIDEO_MEDIA_CLEANUP_INTERVAL_SECONDS", 3600)
 FILE_MEDIA_MAX_BYTES = max(1024, _env_int("FILE_MEDIA_MAX_BYTES", 20 * 1024 * 1024))
+VOICE_MEDIA_MAX_BYTES = max(1024, _env_int("VOICE_MEDIA_MAX_BYTES", 20 * 1024 * 1024))
 
 MSG_TYPE_MAP = {
     1: "文本",
@@ -559,6 +561,12 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             media_name = media_name_getter() if media_name_getter else None
             resolved_text = record_text() if callable(record_text) else record_text
             resolved_meta = dict(extra_meta or {})
+            upstream_unconfirmed = isinstance(result, dict) and result.get("_delivery_confirmed") is False
+            if upstream_unconfirmed:
+                resolved_meta["upstream_delivery_state"] = result.get("_delivery_state")
+                resolved_meta["delivery_confirmed"] = False
+                if result.get("_server_message_id"):
+                    resolved_meta["server_message_id"] = result["_server_message_id"]
             if warning_appended:
                 resolved_meta["limit_warning"] = True
                 resolved_meta["blocked_reason"] = "quota_10"
@@ -567,7 +575,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 user_id=user_id,
                 text=resolved_text,
                 msg_prefix="s",
-                delivery_stage="direct",
+                delivery_stage="accepted_unconfirmed" if upstream_unconfirmed else "direct",
                 overflow_session_id=active_session_id if warning_appended else None,
                 source=source,
                 title=title,
@@ -590,6 +598,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 "ok": True,
                 "result": result,
                 "warning": warning_appended,
+                "delivery_stage": "accepted_unconfirmed" if upstream_unconfirmed else "direct",
                 "overflow_session_id": saved_session_id,
                 **({"media": media_name} if media_name else {}),
             }
@@ -619,6 +628,115 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
 
     # ── 消息处理 ──
 
+    @staticmethod
+    def _message_id(msg: dict) -> str:
+        """优先保留新版 uint64 message_id；兼容旧 msg_id 和 item.msg_id。"""
+        for value in (msg.get("message_id"), msg.get("msg_id")):
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        for item in msg.get("item_list") or []:
+            value = item.get("msg_id")
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return str(int(time.time() * 1000))
+
+    @staticmethod
+    def _body_from_reference_item(item: dict) -> str:
+        item_type = item.get("type")
+        if item_type == 1:
+            return str((item.get("text_item") or {}).get("text") or "")
+        if item_type == 2:
+            return "[图片]"
+        if item_type == 3:
+            return str((item.get("voice_item") or {}).get("text") or "[语音]")
+        if item_type == 4:
+            name = os.path.basename(str((item.get("file_item") or {}).get("file_name") or ""))
+            return f"[文件:{name}]" if name else "[文件]"
+        if item_type == 5:
+            return "[视频]"
+        return ""
+
+    @staticmethod
+    def _resolve_partial_quote(full_text: str, partial: dict) -> str:
+        """兼容新版 partial_text 的全局/相对 endindex 两种解释。"""
+        start_text = str(partial.get("start") or "")
+        end_text = str(partial.get("end") or "")
+        if not full_text or not start_text or not end_text:
+            return ""
+
+        def nth_index(value: str, occurrence: int, start: int = 0) -> int:
+            if occurrence < 0:
+                return -1
+            position = start
+            for current in range(occurrence + 1):
+                position = full_text.find(value, position)
+                if position < 0:
+                    return -1
+                if current < occurrence:
+                    position += len(value)
+            return position
+
+        try:
+            start_occurrence = int(partial.get("startindex") or 0)
+            end_occurrence = int(partial.get("endindex") or 0)
+        except (TypeError, ValueError):
+            return ""
+        start = nth_index(start_text, start_occurrence)
+        if start < 0:
+            return ""
+        candidates = []
+        for end_start in (0, start + len(start_text)):
+            end = nth_index(end_text, end_occurrence, end_start)
+            if end >= start:
+                candidate = full_text[start : end + len(end_text)]
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        expected_md5 = str(partial.get("quotemd5") or "").lower()
+        if expected_md5:
+            return next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if hashlib.md5(candidate.encode("utf-8")).hexdigest() == expected_md5
+                ),
+                "",
+            )
+        return candidates[0] if candidates else ""
+
+    def _resolve_reference_context(self, msg: dict, user_id: str) -> dict | None:
+        item = next((entry for entry in (msg.get("item_list") or []) if entry.get("ref_msg")), None)
+        if not item:
+            return None
+        ref = item.get("ref_msg") or {}
+        ref_item = ref.get("message_item") or {}
+        reference_id = str(ref.get("svr_id") or ref_item.get("msg_id") or "").strip()
+        title = str(ref.get("title") or "").strip()
+        body = self._body_from_reference_item(ref_item)
+        media_name = ""
+        source = "inline"
+        if reference_id and not body:
+            cached = self.db.get_message_by_msg_id(reference_id)
+            if cached and cached.get("user_id") == user_id:
+                body = str(cached.get("text") or "")
+                media_name = str(cached.get("media") or "")
+                source = "cache"
+            else:
+                body = "[引用消息内容未缓存]"
+                source = "missing"
+        partial = ref.get("partial_text") or {}
+        partial_text = self._resolve_partial_quote(body, partial) if partial and body else ""
+        preview_parts = [part for part in (title, partial_text or body) if part]
+        preview = " | ".join(preview_parts)
+        return {
+            "message_id": reference_id,
+            "title": title,
+            "body": body,
+            "partial_text": partial_text,
+            "media": media_name,
+            "source": source,
+            "preview": preview[:500],
+        }
+
     def _extract_text(self, msg: dict) -> str:
         """从消息中提取文本内容。"""
         items = msg.get("item_list") or []
@@ -634,7 +752,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 image_item = item.get("image_item") or item.get("pic_item") or {}
                 pic_info = media.extract_pic_info(image_item)
                 if pic_info:
-                    msg_id = msg.get("msg_id", str(time.time()))
+                    msg_id = self._message_id(msg)
                     filepath = media.download_and_decrypt_image(
                         encrypted_query_param=pic_info["encrypted_query_param"],
                         aes_key_b64=pic_info["aes_key"],
@@ -653,7 +771,20 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                     parts.append("[图片:缺少解密参数]")
                     logger.warning("pic_item 缺少解密参数: keys=%s", list(image_item.keys()))
             elif item_type == 3:
-                voice_text = item.get("voice_item", {}).get("text", "")
+                voice_item = item.get("voice_item") or {}
+                voice_text = voice_item.get("text", "")
+                voice_info = media.extract_pic_info(voice_item)
+                if voice_info:
+                    filepath = media.download_and_decrypt_media(
+                        encrypted_query_param=voice_info["encrypted_query_param"],
+                        aes_key_b64=voice_info["aes_key"],
+                        msg_id=self._message_id(msg),
+                        media_type="voice",
+                        media_dir=self._media_dir,
+                        max_bytes=VOICE_MEDIA_MAX_BYTES,
+                    )
+                    if filepath:
+                        msg.setdefault("_media_paths", []).append(os.path.basename(filepath))
                 parts.append(f"[语音] {voice_text}" if voice_text else "[语音]")
             elif item_type == 4:
                 file_item = item.get("file_item") or {}
@@ -668,7 +799,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                     continue
                 file_info = media.extract_pic_info(file_item)
                 if file_info:
-                    msg_id = msg.get("msg_id", str(time.time()))
+                    msg_id = self._message_id(msg)
                     filepath = media.download_and_decrypt_media(
                         encrypted_query_param=file_info["encrypted_query_param"],
                         aes_key_b64=file_info["aes_key"],
@@ -692,7 +823,7 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 video_item = item.get("video_item") or {}
                 video_info = media.extract_pic_info(video_item)
                 if video_info:
-                    msg_id = msg.get("msg_id", str(time.time()))
+                    msg_id = self._message_id(msg)
                     filepath = media.download_and_decrypt_media(
                         encrypted_query_param=video_info["encrypted_query_param"],
                         aes_key_b64=video_info["aes_key"],
@@ -733,7 +864,9 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
             "from_user": from_user,
             "from_name": from_name,
             "text": text,
-            "msg_id": msg.get("msg_id", ""),
+            "msg_id": self._message_id(msg),
+            "message_id": self._message_id(msg),
+            "reference": msg.get("_reference_context"),
             "timestamp": int(time.time()),
             "msg_type": msg.get("message_type"),
             "is_command": is_command,
@@ -755,6 +888,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         from_user = msg.get("from_user_id", "")
         context_token = msg.get("context_token", "")
         text = self._extract_text(msg)
+        reference_context = self._resolve_reference_context(msg, from_user)
+        if reference_context:
+            msg["_reference_context"] = reference_context
+            preview = reference_context.get("preview") or "引用消息"
+            text = f"[引用:{preview}]\n{text}"
 
         display_name = msg.get("from_user_nickname") or msg.get("from_user_name")
         self._update_contact(from_user, display_name)
@@ -804,8 +942,9 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                 "user_id": from_user,
                 "text": text,
                 "time": int(time.time()),
-                "msg_id": msg.get("msg_id", str(time.time())),
+                "msg_id": self._message_id(msg),
                 "media": media_paths[0] if media_paths else None,
+                "meta": {"reference": reference_context} if reference_context else None,
             }
         )
 
@@ -1241,6 +1380,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
                         self.process_message(msg)
                     except Exception as exc:
                         logger.error("处理消息异常: %s", exc, exc_info=True)
+            except ILinkSessionPausedError as exc:
+                logger.warning("iLink token 暂停中，%d 秒后重试", exc.remaining_seconds)
+                deadline = time.time() + exc.remaining_seconds
+                while self._running and time.time() < deadline:
+                    time.sleep(min(5, max(0.1, deadline - time.time())))
             except RuntimeError as exc:
                 logger.warning("需要重新登录: %s", exc)
                 time.sleep(10)
@@ -1255,6 +1399,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
     def start(self):
         if self._running:
             return
+        if self.client.logged_in and hasattr(self.client, "notify_start"):
+            try:
+                self.client.notify_start()
+            except Exception as exc:
+                logger.warning("iLink notifyStart 失败，继续启动: %s", exc)
         self._running = True
         self.cleanup_expired_pending_messages(force=True)
         self.cleanup_expired_media_files(force=True)
@@ -1268,6 +1417,11 @@ class WeChatBridge(DeliveryMixin, CommandMixin, KeepaliveMixin):
         logger.info("WeChatBridge 已启动")
 
     def stop(self):
+        if self.client.logged_in and hasattr(self.client, "notify_stop"):
+            try:
+                self.client.notify_stop()
+            except Exception as exc:
+                logger.warning("iLink notifyStop 失败，继续关闭: %s", exc)
         self._running = False
         if getattr(self, "plugin_registry", None):
             try:
