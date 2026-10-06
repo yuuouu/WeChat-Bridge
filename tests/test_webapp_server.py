@@ -34,7 +34,7 @@ class _FakeClient:
     def clear_token(self):
         self.cleared = True
 
-    def poll_qrcode_status(self, qrcode):
+    def poll_qrcode_status(self, qrcode, verify_code=""):
         self.polled_qrcode = qrcode
         return self.qr_status_response
 

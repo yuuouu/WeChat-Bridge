@@ -9,19 +9,26 @@ import base64
 import json
 import logging
 import os
+import re
 import struct
 import time
 from pathlib import Path
 
 import requests
 
+from version import __version__ as BRIDGE_VERSION
+
 logger = logging.getLogger(__name__)
 
 FIXED_BASE_URL = "https://ilinkai.weixin.qq.com"
 BASE_URL = "https://ilinkai.weixin.qq.com"
-ILINK_CHANNEL_VERSION = "2.1.7"
+ILINK_CHANNEL_VERSION = "2.4.9"
 ILINK_APP_ID = "bot"
-ILINK_APP_CLIENT_VERSION = 131335
+ILINK_APP_CLIENT_VERSION = (2 << 16) | (4 << 8) | 9
+STALE_TOKEN_ERRCODE = -14
+SESSION_PAUSE_SECONDS = 60 * 60
+DEFAULT_BOT_AGENT = f"WeChat-Bridge/{BRIDGE_VERSION}"
+BOT_AGENT_MAX_BYTES = 256
 TOKEN_FILE = os.environ.get("TOKEN_FILE", "./data/token.json")
 _DEFAULT_TOKEN_FILE = object()
 
@@ -37,6 +44,112 @@ MESSAGE_ITEM_TYPE_IMAGE = 2
 MESSAGE_ITEM_TYPE_VOICE = 3
 MESSAGE_ITEM_TYPE_FILE = 4
 MESSAGE_ITEM_TYPE_VIDEO = 5
+
+
+class ILinkAPIError(RuntimeError):
+    """iLink HTTP 请求成功、但业务层拒绝了操作。"""
+
+    def __init__(self, operation: str, *, ret=0, errcode=0, errmsg=""):
+        self.operation = operation
+        self.ret = ret
+        self.errcode = errcode
+        self.errmsg = str(errmsg or "")
+        if ret == -2 or errcode == -2:
+            detail = "会话上下文已失效或触发上游发送限制；有效期由服务端控制，请让用户重新互动后重试"
+        elif ret == STALE_TOKEN_ERRCODE or errcode == STALE_TOKEN_ERRCODE:
+            detail = "Bot token 已失效，客户端将暂停请求后重试；若持续失败请重新扫码"
+        else:
+            detail = self.errmsg or "unknown business error"
+        super().__init__(
+            f"{operation} failed: ret={ret}, errcode={errcode}, errmsg={self.errmsg or '(none)'}; {detail}"
+        )
+
+
+class ILinkSessionPausedError(RuntimeError):
+    """服务端报告 token 陈旧后的临时冷却状态。"""
+
+    def __init__(self, remaining_seconds: int):
+        self.remaining_seconds = max(1, int(remaining_seconds))
+        super().__init__(
+            f"iLink session paused after errcode={STALE_TOKEN_ERRCODE}, retry in {self.remaining_seconds}s"
+        )
+
+
+def _build_client_version(version: str) -> int:
+    """将 semver 编码为 iLink 的 0x00MMNNPP。"""
+    parts = []
+    for raw in str(version).split(".")[:3]:
+        match = re.match(r"\d+", raw)
+        parts.append(int(match.group(0)) if match else 0)
+    parts.extend([0] * (3 - len(parts)))
+    return ((parts[0] & 0xFF) << 16) | ((parts[1] & 0xFF) << 8) | (parts[2] & 0xFF)
+
+
+def sanitize_bot_agent(raw: str | None) -> str:
+    """按官方 2.4.x UA 风格规则清洗 bot_agent。"""
+    if not raw or not isinstance(raw, str):
+        return DEFAULT_BOT_AGENT
+    product_re = re.compile(r"^[A-Za-z0-9_.-]{1,32}/[A-Za-z0-9_.+-]{1,32}$")
+    comment_re = re.compile(r"^[\x20-\x27\x2A-\x7E]{1,64}$")
+    raw_tokens = raw.strip().split()
+    tokens: list[str] = []
+    index = 0
+    while index < len(raw_tokens):
+        token = raw_tokens[index]
+        if token.startswith("(") and not token.endswith(")"):
+            combined = token
+            while index + 1 < len(raw_tokens) and not combined.endswith(")"):
+                index += 1
+                combined += " " + raw_tokens[index]
+            tokens.append(combined)
+        else:
+            tokens.append(token)
+        index += 1
+
+    accepted: list[str] = []
+    pending: str | None = None
+    for token in tokens:
+        if token.startswith("(") and token.endswith(")"):
+            inner = token[1:-1]
+            if pending and comment_re.fullmatch(inner):
+                accepted.append(f"{pending} ({inner})")
+                pending = None
+            elif pending:
+                accepted.append(pending)
+                pending = None
+            continue
+        if pending:
+            accepted.append(pending)
+            pending = None
+        if product_re.fullmatch(token):
+            pending = token
+    if pending:
+        accepted.append(pending)
+    if not accepted:
+        return DEFAULT_BOT_AGENT
+
+    bounded: list[str] = []
+    for token in accepted:
+        candidate = " ".join([*bounded, token])
+        if len(candidate.encode("utf-8")) > BOT_AGENT_MAX_BYTES:
+            break
+        bounded.append(token)
+    return " ".join(bounded) or DEFAULT_BOT_AGENT
+
+
+def classify_request_error(exc: Exception) -> dict:
+    """把 requests/urllib3 网络异常归类，避免只有模糊的 fetch failed。"""
+    detail = f"{type(exc).__name__}: {exc}"
+    lowered = detail.lower()
+    if isinstance(exc, requests.exceptions.Timeout) or "timed out" in lowered:
+        return {"type": "timeout", "description": "request timeout"}
+    if any(token in lowered for token in ("name or service not known", "nodename nor servname", "getaddrinfo")):
+        return {"type": "dns", "description": "DNS resolution failed"}
+    if any(token in lowered for token in ("ssl", "tls", "certificate")):
+        return {"type": "tls", "description": "TLS handshake or certificate error"}
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return {"type": "tcp", "description": "TCP connection failed"}
+    return {"type": "unknown", "description": "network request failed"}
 
 
 def format_reference_fallback_text(text: str, *, ref_text: str = "", ref_title: str = "") -> str:
@@ -58,16 +171,20 @@ def format_reference_fallback_text(text: str, *, ref_text: str = "", ref_title: 
 def _random_uin() -> str:
     """生成随机 X-WECHAT-UIN（uint32 → 十进制字符串 → base64）"""
     rand_bytes = os.urandom(4)
-    rand_uint32 = struct.unpack("<I", rand_bytes)[0]
+    rand_uint32 = struct.unpack(">I", rand_bytes)[0]
     return base64.b64encode(str(rand_uint32).encode()).decode()
 
 
 def _get_headers() -> dict:
     """构造 QR GET 请求专用 headers。"""
-    return {
+    headers = {
         "iLink-App-Id": ILINK_APP_ID,
         "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
+    route_tag = os.environ.get("ILINK_ROUTE_TAG", "").strip()
+    if route_tag:
+        headers["SKRouteTag"] = route_tag
+    return headers
 
 
 def _json_headers(bot_token: str | None = None) -> dict:
@@ -79,6 +196,9 @@ def _json_headers(bot_token: str | None = None) -> dict:
         "iLink-App-Id": ILINK_APP_ID,
         "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
+    route_tag = os.environ.get("ILINK_ROUTE_TAG", "").strip()
+    if route_tag:
+        h["SKRouteTag"] = route_tag
     if bot_token:
         h["Authorization"] = f"Bearer {bot_token}"
     return h
@@ -88,7 +208,11 @@ _headers = _json_headers
 
 
 def _base_info() -> dict:
-    return {"channel_version": ILINK_CHANNEL_VERSION}
+    configured = os.environ.get("ILINK_BOT_AGENT", DEFAULT_BOT_AGENT)
+    return {
+        "channel_version": ILINK_CHANNEL_VERSION,
+        "bot_agent": sanitize_bot_agent(configured),
+    }
 
 
 class ILinkClient:
@@ -104,6 +228,8 @@ class ILinkClient:
         self.bot_id: str | None = None
         self.user_id: str | None = None
         self.get_updates_buf: str = ""
+        self.long_poll_timeout_ms: int = 35_000
+        self._session_paused_until: float = 0
         self._login_poll_base_url: str = FIXED_BASE_URL
         self._session = requests.Session()
         if load_token:
@@ -131,6 +257,39 @@ class ILinkClient:
     def logged_in(self) -> bool:
         return self.bot_token is not None
 
+    def session_pause_remaining(self) -> int:
+        remaining = int(self._session_paused_until - time.time())
+        if remaining <= 0:
+            self._session_paused_until = 0
+            return 0
+        return remaining
+
+    def _assert_session_active(self):
+        remaining = self.session_pause_remaining()
+        if remaining:
+            raise ILinkSessionPausedError(remaining)
+
+    def _pause_stale_session(self):
+        self._session_paused_until = time.time() + SESSION_PAUSE_SECONDS
+
+    def _validate_response(self, data: dict, operation: str) -> dict:
+        ret = data.get("ret", 0)
+        errcode = data.get("errcode", 0)
+        if ret == STALE_TOKEN_ERRCODE or errcode == STALE_TOKEN_ERRCODE:
+            self._pause_stale_session()
+        if ret not in (None, 0) or errcode not in (None, 0):
+            raise ILinkAPIError(operation, ret=ret, errcode=errcode, errmsg=data.get("errmsg"))
+        return data
+
+    def _validate_delivery_response(self, data: dict, operation: str) -> dict:
+        self._validate_response(data, operation)
+        # iLink 没有端到端送达回执。即使 ret=0，也只能证明后端受理。
+        data.setdefault("_delivery_state", "accepted_unconfirmed")
+        data.setdefault("_delivery_confirmed", False)
+        if data.get("message_id") is not None:
+            data["_server_message_id"] = str(data["message_id"])
+        return data
+
     def _post_json(
         self,
         path: str,
@@ -141,16 +300,29 @@ class ILinkClient:
         timeout: int = 15,
     ) -> dict:
         """POST JSON 到 iLink API，并统一注入 base_info。"""
+        if token:
+            self._assert_session_active()
         url = f"{base_url or self.base_url}/{path.lstrip('/')}"
         body = {**payload, "base_info": _base_info()}
-        resp = self._session.post(
-            url,
-            headers=_json_headers(token),
-            json=body,
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = self._session.post(
+                url,
+                headers=_json_headers(token),
+                json=body,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as exc:
+            classified = classify_request_error(exc)
+            logger.error(
+                "%s 请求失败: type=%s description=%s endpoint=%s",
+                path,
+                classified["type"],
+                classified["description"],
+                url,
+            )
+            raise
 
     # ── Token 持久化 ──
 
@@ -201,6 +373,8 @@ class ILinkClient:
         self.bot_id = None
         self.user_id = None
         self.get_updates_buf = ""
+        self.long_poll_timeout_ms = 35_000
+        self._session_paused_until = 0
         self._login_poll_base_url = FIXED_BASE_URL
         if self.token_file and os.path.exists(self.token_file):
             os.remove(self.token_file)
@@ -208,15 +382,17 @@ class ILinkClient:
 
     # ── 登录流程 ──
 
-    def get_qrcode(self) -> dict:
+    def get_qrcode(self, local_token_list: list[str] | None = None) -> dict:
         """
         获取登录二维码
         返回: {"qrcode": "xxx", "qrcode_img_content": "base64图片数据", "url": "扫码链接"}
         """
-        resp = self._session.get(
+        tokens = [str(token).strip() for token in (local_token_list or []) if str(token).strip()][-10:]
+        resp = self._session.post(
             f"{FIXED_BASE_URL}/ilink/bot/get_bot_qrcode",
             params={"bot_type": "3"},
-            headers=_get_headers(),
+            headers=_json_headers(),
+            json={"local_token_list": tokens},
             timeout=15,
         )
         resp.raise_for_status()
@@ -224,14 +400,17 @@ class ILinkClient:
         logger.info("获取二维码成功: qrcode=%s", data.get("qrcode", "")[:20])
         return data
 
-    def poll_qrcode_status(self, qrcode: str) -> dict:
+    def poll_qrcode_status(self, qrcode: str, verify_code: str = "") -> dict:
         """
         轮询扫码状态
         返回: {"status": "wait|scaned|confirmed|expired|scaned_but_redirect", ...}
         """
+        params = {"qrcode": qrcode}
+        if verify_code.strip():
+            params["verify_code"] = verify_code.strip()
         resp = self._session.get(
             f"{self._login_poll_base_url}/ilink/bot/get_qrcode_status",
-            params={"qrcode": qrcode},
+            params=params,
             headers=_get_headers(),
             timeout=45,  # 35s long-poll + 余量
         )
@@ -271,22 +450,29 @@ class ILinkClient:
             raise RuntimeError("未登录，请先扫码")
 
         try:
+            effective_timeout = max(timeout, int(self.long_poll_timeout_ms / 1000))
             data = self._post_json(
                 "ilink/bot/getupdates",
                 {"get_updates_buf": self.get_updates_buf},
                 token=self.bot_token,
-                timeout=timeout + 10,  # 比服务器 hold 时间多留一点
+                timeout=effective_timeout + 10,  # 比服务器 hold 时间多留一点
             )
 
             ret = data.get("ret", 0)
             errcode = data.get("errcode", 0)
             if ret != 0 or errcode != 0:
                 logger.warning("getupdates 返回异常数据: %s", json.dumps(data, ensure_ascii=False))
-                # 如果真的是凭证过期
-                if ret in (-1, 401, 403) or errcode in (401, 403, "TokenExpired"):
+                if ret == STALE_TOKEN_ERRCODE or errcode == STALE_TOKEN_ERRCODE:
+                    self._pause_stale_session()
+                    logger.error("Bot token 已失效，暂停 iLink 请求 1 小时后重试")
+                elif ret in (-1, 401, 403) or errcode in (401, 403, "TokenExpired"):
                     logger.error("Token 可能已过期，需重新扫码登录")
                     self.clear_token()
                 return []
+
+            suggested_timeout = data.get("longpolling_timeout_ms")
+            if isinstance(suggested_timeout, (int, float)) and suggested_timeout > 0:
+                self.long_poll_timeout_ms = max(1_000, int(suggested_timeout))
 
             # 更新游标
             new_buf = data.get("get_updates_buf")
@@ -333,20 +519,13 @@ class ILinkClient:
             token=self.bot_token,
             timeout=8,
         )
+        self._validate_delivery_response(data, "sendMessage")
         ret = data.get("ret", 0)
-        errcode = data.get("errcode", 0)
-        if ret != 0 or errcode != 0:
-            logger.error("发送消息失败: %s", json.dumps(data, ensure_ascii=False))
-            if ret == -2:
-                raise RuntimeError(
-                    "API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。请在微信上让对方先发一条消息。"
-                )
-            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
 
         logger.info("发送消息到 %s: %s (ret=%s)", to_user_id[:20], text[:50], ret)
         return data
 
-    def send_typing(self, to_user_id: str, context_token: str = "") -> dict:
+    def send_typing(self, to_user_id: str, context_token: str = "", *, status: int = 1) -> dict:
         """发送"正在输入"状态"""
         if not self.bot_token:
             raise RuntimeError("未登录")
@@ -362,12 +541,15 @@ class ILinkClient:
             token=self.bot_token,
             timeout=10,
         )
+        self._validate_response(config_data, "getConfig")
         typing_ticket = config_data.get("typing_ticket", "")
+        if not typing_ticket:
+            raise ILinkAPIError("getConfig", errmsg="missing typing_ticket")
 
         payload = {
             "ilink_user_id": to_user_id,
             "typing_ticket": typing_ticket,
-            "status": 1,
+            "status": 2 if status == 2 else 1,
         }
 
         data = self._post_json(
@@ -376,15 +558,33 @@ class ILinkClient:
             token=self.bot_token,
             timeout=10,
         )
-        ret = data.get("ret", 0)
-        errcode = data.get("errcode", 0)
-
-        if ret != 0 or errcode != 0:
-            if ret == -2:
-                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法发送状态。")
-            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}")
+        self._validate_response(data, "sendTyping")
 
         return data
+
+    def notify_start(self) -> dict:
+        """通知 iLink 后端当前账号客户端已启动。失败由调用方按非致命错误处理。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录")
+        data = self._post_json(
+            "ilink/bot/msg/notifystart",
+            {},
+            token=self.bot_token,
+            timeout=10,
+        )
+        return self._validate_response(data, "notifyStart")
+
+    def notify_stop(self) -> dict:
+        """通知 iLink 后端当前账号客户端正在停止。"""
+        if not self.bot_token:
+            raise RuntimeError("未登录")
+        data = self._post_json(
+            "ilink/bot/msg/notifystop",
+            {},
+            token=self.bot_token,
+            timeout=10,
+        )
+        return self._validate_response(data, "notifyStop")
 
     # ── 媒体上传 ──
 
@@ -437,9 +637,7 @@ class ILinkClient:
             timeout=15,
         )
 
-        ret = upload_data.get("ret", 0)
-        if ret != 0:
-            raise RuntimeError(f"获取上传 URL 失败: {json.dumps(upload_data, ensure_ascii=False)}")
+        self._validate_response(upload_data, "getUploadUrl")
 
         upload_param = upload_data.get("upload_param", "")
         cdn_upload_url = upload_data.get("upload_full_url", "").strip()
@@ -452,16 +650,29 @@ class ILinkClient:
 
             cdn_upload_url = f"https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param={urllib.parse.quote(upload_param)}&filekey={urllib.parse.quote(filekey)}"
 
-        upload_resp = self._session.post(
-            cdn_upload_url,
-            headers={
-                "Content-Type": "application/octet-stream",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            },
-            data=encrypted_data,
-            timeout=60,
-        )
-        upload_resp.raise_for_status()
+        upload_resp = None
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                upload_resp = self._session.post(
+                    cdn_upload_url,
+                    headers={"Content-Type": "application/octet-stream"},
+                    data=encrypted_data,
+                    timeout=60,
+                )
+                upload_resp.raise_for_status()
+                if upload_resp.headers.get("X-Encrypted-Param") or upload_resp.headers.get("x-encrypted-param"):
+                    break
+                raise RuntimeError("CDN response missing x-encrypted-param")
+            except Exception as exc:
+                last_error = exc
+                status_code = getattr(getattr(exc, "response", None), "status_code", 0) or 0
+                if 400 <= status_code < 500 or attempt == 3:
+                    raise
+                logger.warning("CDN 上传第 %d 次失败，准备重试: %s", attempt, exc)
+                time.sleep(attempt)
+        if upload_resp is None:
+            raise RuntimeError(f"CDN 上传失败: {last_error}")
 
         # 6. 从响应头提取下载凭证
         download_ref = upload_resp.headers.get("X-Encrypted-Param") or upload_resp.headers.get("x-encrypted-param")
@@ -528,9 +739,7 @@ class ILinkClient:
                 timeout=15,
             )
 
-            ret = upload_data.get("ret", 0)
-            if ret != 0:
-                raise RuntimeError(f"获取上传 URL 失败: {json.dumps(upload_data, ensure_ascii=False)}")
+            self._validate_response(upload_data, "getUploadUrl")
 
             upload_param = upload_data.get("upload_param", "")
             cdn_upload_url = upload_data.get("upload_full_url", "").strip()
@@ -542,17 +751,30 @@ class ILinkClient:
 
                 cdn_upload_url = f"https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param={urllib.parse.quote(upload_param)}&filekey={urllib.parse.quote(filekey)}"
 
-            with open(encrypted_path, "rb") as encrypted_fh:
-                upload_resp = self._session.post(
-                    cdn_upload_url,
-                    headers={
-                        "Content-Type": "application/octet-stream",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    },
-                    data=encrypted_fh,
-                    timeout=60,
-                )
-            upload_resp.raise_for_status()
+            upload_resp = None
+            last_error = None
+            for attempt in range(1, 4):
+                try:
+                    with open(encrypted_path, "rb") as encrypted_fh:
+                        upload_resp = self._session.post(
+                            cdn_upload_url,
+                            headers={"Content-Type": "application/octet-stream"},
+                            data=encrypted_fh,
+                            timeout=60,
+                        )
+                    upload_resp.raise_for_status()
+                    if upload_resp.headers.get("X-Encrypted-Param") or upload_resp.headers.get("x-encrypted-param"):
+                        break
+                    raise RuntimeError("CDN response missing x-encrypted-param")
+                except Exception as exc:
+                    last_error = exc
+                    status_code = getattr(getattr(exc, "response", None), "status_code", 0) or 0
+                    if 400 <= status_code < 500 or attempt == 3:
+                        raise
+                    logger.warning("CDN 文件上传第 %d 次失败，准备重试: %s", attempt, exc)
+                    time.sleep(attempt)
+            if upload_resp is None:
+                raise RuntimeError(f"CDN 上传失败: {last_error}")
         finally:
             try:
                 os.unlink(encrypted_path)
@@ -632,13 +854,8 @@ class ILinkClient:
             token=self.bot_token,
             timeout=15,
         )
+        self._validate_delivery_response(data, "sendImage")
         ret = data.get("ret", 0)
-        errcode = data.get("errcode", 0)
-        if ret != 0 or errcode != 0:
-            logger.error("发送图片失败: %s", json.dumps(data, ensure_ascii=False))
-            if ret == -2:
-                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
-            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
 
         logger.info("发送图片到 %s: %d bytes (ret=%s)", to_user_id[:20], len(file_data), ret)
         return data
@@ -695,13 +912,8 @@ class ILinkClient:
             token=self.bot_token,
             timeout=15,
         )
+        self._validate_delivery_response(data, "sendVideo")
         ret = data.get("ret", 0)
-        errcode = data.get("errcode", 0)
-        if ret != 0 or errcode != 0:
-            logger.error("发送视频失败: %s", json.dumps(data, ensure_ascii=False))
-            if ret == -2:
-                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
-            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
 
         logger.info("发送视频到 %s: %d bytes (ret=%s)", to_user_id[:20], len(file_data), ret)
         return data
@@ -752,13 +964,8 @@ class ILinkClient:
             token=self.bot_token,
             timeout=15,
         )
+        self._validate_delivery_response(data, "sendVoice")
         ret = data.get("ret", 0)
-        errcode = data.get("errcode", 0)
-        if ret != 0 or errcode != 0:
-            logger.error("发送语音失败: %s", json.dumps(data, ensure_ascii=False))
-            if ret == -2:
-                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
-            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
         logger.info("发送语音到 %s: %d bytes (ret=%s)", to_user_id[:20], upload_result.get("file_size", 0), ret)
         return data
 
@@ -846,13 +1053,8 @@ class ILinkClient:
             token=self.bot_token,
             timeout=15,
         )
+        self._validate_delivery_response(data, "sendVideo")
         ret = data.get("ret", 0)
-        errcode = data.get("errcode", 0)
-        if ret != 0 or errcode != 0:
-            logger.error("发送视频失败: %s", json.dumps(data, ensure_ascii=False))
-            if ret == -2:
-                raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
-            raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
 
         logger.info("发送视频到 %s: %d bytes (ret=%s)", to_user_id[:20], upload_result["file_size"], ret)
         return data
@@ -982,13 +1184,7 @@ class ILinkClient:
                 token=self.bot_token,
                 timeout=15,
             )
-            ret = data.get("ret", 0)
-            errcode = data.get("errcode", 0)
-            if ret != 0 or errcode != 0:
-                logger.error("%s失败: %s", label, json.dumps(data, ensure_ascii=False))
-                if ret == -2:
-                    raise RuntimeError("API限制(ret=-2)：距离该用户最后一次发消息可能已超24小时，无法主动下发。")
-                raise RuntimeError(f"API Error: ret={ret}, errcode={errcode}, errmsg={data.get('errmsg')}")
+            self._validate_delivery_response(data, label)
             last_data = data
 
         logger.info("%s到 %s: items=%d (ret=%s)", label, to_user_id[:20], len(items), last_data.get("ret", 0))

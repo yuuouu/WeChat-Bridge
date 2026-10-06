@@ -144,7 +144,7 @@ class LoggedInPropertyTests(unittest.TestCase):
 
 
 class HeadersTests(unittest.TestCase):
-    """GET/POST headers 与 base_info 应对齐 openclaw-weixin@2.1.7。"""
+    """GET/POST headers 与 base_info 应对齐 openclaw-weixin@2.4.9。"""
 
     def test_get_headers_are_qr_only(self):
         h = ilink._get_headers()
@@ -152,7 +152,7 @@ class HeadersTests(unittest.TestCase):
             h,
             {
                 "iLink-App-Id": "bot",
-                "iLink-App-ClientVersion": "131335",
+                "iLink-App-ClientVersion": "132105",
             },
         )
         self.assertNotIn("Content-Type", h)
@@ -165,7 +165,7 @@ class HeadersTests(unittest.TestCase):
         self.assertEqual(h["Content-Type"], "application/json")
         self.assertEqual(h["AuthorizationType"], "ilink_bot_token")
         self.assertEqual(h["iLink-App-Id"], "bot")
-        self.assertEqual(h["iLink-App-ClientVersion"], "131335")
+        self.assertEqual(h["iLink-App-ClientVersion"], "132105")
         self.assertIn("X-WECHAT-UIN", h)
         self.assertNotIn("Authorization", h)
 
@@ -173,13 +173,23 @@ class HeadersTests(unittest.TestCase):
         h = ilink._json_headers("my-token")
         self.assertEqual(h["Authorization"], "Bearer my-token")
         self.assertEqual(h["iLink-App-Id"], "bot")
-        self.assertEqual(h["iLink-App-ClientVersion"], "131335")
+        self.assertEqual(h["iLink-App-ClientVersion"], "132105")
 
     def test_headers_alias_remains_backward_compatible(self):
         self.assertIs(ilink._headers, ilink._json_headers)
 
     def test_base_info_uses_ilink_channel_version(self):
-        self.assertEqual(ilink._base_info(), {"channel_version": "2.1.7"})
+        self.assertEqual(
+            ilink._base_info(),
+            {"channel_version": "2.4.9", "bot_agent": "WeChat-Bridge/1.4.0"},
+        )
+
+    def test_bot_agent_sanitizer_rejects_unsafe_tokens(self):
+        self.assertEqual(ilink.sanitize_bot_agent("bad token (x)"), ilink.DEFAULT_BOT_AGENT)
+        self.assertEqual(
+            ilink.sanitize_bot_agent("Bridge/1.4.0 (env=test) Agent/2.0"),
+            "Bridge/1.4.0 (env=test) Agent/2.0",
+        )
 
 
 class QRLoginTests(unittest.TestCase):
@@ -200,18 +210,19 @@ class QRLoginTests(unittest.TestCase):
         mock_resp.raise_for_status = MagicMock()
         return mock_resp
 
-    def test_get_qrcode_uses_fixed_base_url_and_get_headers(self):
+    def test_get_qrcode_uses_fixed_base_url_and_post_headers(self):
         client = ilink.ILinkClient()
         client.base_url = "https://custom.example.com"
         mock_resp = self._mock_get_response({"qrcode": "qr-1"})
 
-        with patch.object(client._session, "get", return_value=mock_resp) as mock_get:
+        with patch.object(client._session, "post", return_value=mock_resp) as mock_post:
             data = client.get_qrcode()
 
         self.assertEqual(data["qrcode"], "qr-1")
-        self.assertEqual(mock_get.call_args.args[0], f"{ilink.FIXED_BASE_URL}/ilink/bot/get_bot_qrcode")
-        self.assertEqual(mock_get.call_args.kwargs["params"], {"bot_type": "3"})
-        self.assertEqual(mock_get.call_args.kwargs["headers"], ilink._get_headers())
+        self.assertEqual(mock_post.call_args.args[0], f"{ilink.FIXED_BASE_URL}/ilink/bot/get_bot_qrcode")
+        self.assertEqual(mock_post.call_args.kwargs["params"], {"bot_type": "3"})
+        self.assertEqual(mock_post.call_args.kwargs["headers"]["AuthorizationType"], "ilink_bot_token")
+        self.assertEqual(mock_post.call_args.kwargs["json"], {"local_token_list": []})
 
     def test_scaned_but_redirect_only_updates_login_poll_base_url(self):
         client = ilink.ILinkClient()
@@ -238,6 +249,27 @@ class QRLoginTests(unittest.TestCase):
 
         self.assertEqual(data["status"], "expired")
         self.assertEqual(client._login_poll_base_url, ilink.FIXED_BASE_URL)
+
+    def test_verify_code_is_sent_on_status_poll(self):
+        client = ilink.ILinkClient()
+        mock_resp = self._mock_get_response({"status": "scaned"})
+
+        with patch.object(client._session, "get", return_value=mock_resp) as mock_get:
+            client.poll_qrcode_status("qr-verify", verify_code="123456")
+
+        self.assertEqual(mock_get.call_args.kwargs["params"]["verify_code"], "123456")
+
+    def test_binded_redirect_keeps_existing_credentials(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "existing-token"
+        client.bot_id = "existing-bot"
+        mock_resp = self._mock_get_response({"status": "binded_redirect"})
+
+        with patch.object(client._session, "get", return_value=mock_resp):
+            result = client.poll_qrcode_status("qr-bound")
+
+        self.assertEqual(result["status"], "binded_redirect")
+        self.assertEqual(client.bot_token, "existing-token")
 
     def test_confirmed_without_ilink_bot_id_raises(self):
         client = ilink.ILinkClient()
@@ -351,10 +383,10 @@ class GetUpdatesTests(unittest.TestCase):
         headers = mock_post.call_args.kwargs["headers"]
         self.assertEqual(headers["Authorization"], "Bearer test-token")
         self.assertEqual(headers["iLink-App-Id"], "bot")
-        self.assertEqual(headers["iLink-App-ClientVersion"], "131335")
+        self.assertEqual(headers["iLink-App-ClientVersion"], "132105")
         payload = mock_post.call_args.kwargs["json"]
         self.assertEqual(payload["get_updates_buf"], "cursor-123")
-        self.assertEqual(payload["base_info"], {"channel_version": "2.1.7"})
+        self.assertEqual(payload["base_info"], ilink._base_info())
 
     def test_returns_empty_on_timeout(self):
         import requests
@@ -396,6 +428,41 @@ class GetUpdatesTests(unittest.TestCase):
         # token 不应被清除（非 auth 错误）
         self.assertIsNotNone(client.bot_token)
 
+    def test_stale_token_pauses_session_without_deleting_token(self):
+        client = ilink.ILinkClient()
+        client.bot_token = "test-token"
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ret": 0, "errcode": ilink.STALE_TOKEN_ERRCODE}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch.object(client._session, "post", return_value=mock_resp):
+            self.assertEqual(client.get_updates(timeout=1), [])
+
+        self.assertGreater(client.session_pause_remaining(), 0)
+        self.assertEqual(client.bot_token, "test-token")
+        with self.assertRaises(ilink.ILinkSessionPausedError):
+            client.send_text("user@im.wechat", "blocked during cooldown")
+
+
+class LifecycleNotificationTests(unittest.TestCase):
+    def test_start_and_stop_notifications_include_base_info(self):
+        client = ilink.ILinkClient(load_token=False)
+        client.bot_token = "test-token"
+        responses = []
+        for _ in range(2):
+            response = MagicMock()
+            response.json.return_value = {"ret": 0}
+            response.raise_for_status = MagicMock()
+            responses.append(response)
+
+        with patch.object(client._session, "post", side_effect=responses) as mock_post:
+            client.notify_start()
+            client.notify_stop()
+
+        self.assertTrue(mock_post.call_args_list[0].args[0].endswith("/ilink/bot/msg/notifystart"))
+        self.assertTrue(mock_post.call_args_list[1].args[0].endswith("/ilink/bot/msg/notifystop"))
+        self.assertEqual(mock_post.call_args_list[0].kwargs["json"]["base_info"], ilink._base_info())
+
 
 class SendTextTests(unittest.TestCase):
     """send_text 的正常和异常路径。"""
@@ -432,11 +499,11 @@ class SendTextTests(unittest.TestCase):
         self.assertEqual(payload["msg"]["to_user_id"], "user@im.wechat")
         self.assertEqual(payload["msg"]["item_list"][0]["type"], ilink.MESSAGE_ITEM_TYPE_TEXT)
         self.assertEqual(payload["msg"]["item_list"][0]["text_item"]["text"], "hello world")
-        self.assertEqual(payload["base_info"], {"channel_version": "2.1.7"})
+        self.assertEqual(payload["base_info"], ilink._base_info())
         headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
         self.assertEqual(headers["Authorization"], "Bearer test-token")
         self.assertEqual(headers["iLink-App-Id"], "bot")
-        self.assertEqual(headers["iLink-App-ClientVersion"], "131335")
+        self.assertEqual(headers["iLink-App-ClientVersion"], "132105")
 
     def test_send_text_ret_minus_two_raises_window_error(self):
         client = ilink.ILinkClient()
@@ -508,8 +575,8 @@ class SendTypingTests(unittest.TestCase):
         getconfig_call, sendtyping_call = mock_post.call_args_list
         self.assertEqual(getconfig_call.args[0], f"{ilink.BASE_URL}/ilink/bot/getconfig")
         self.assertEqual(sendtyping_call.args[0], f"{ilink.BASE_URL}/ilink/bot/sendtyping")
-        self.assertEqual(getconfig_call.kwargs["json"]["base_info"], {"channel_version": "2.1.7"})
-        self.assertEqual(sendtyping_call.kwargs["json"]["base_info"], {"channel_version": "2.1.7"})
+        self.assertEqual(getconfig_call.kwargs["json"]["base_info"], ilink._base_info())
+        self.assertEqual(sendtyping_call.kwargs["json"]["base_info"], ilink._base_info())
         self.assertEqual(getconfig_call.kwargs["json"]["context_token"], "ctx-token")
         self.assertEqual(sendtyping_call.kwargs["json"]["typing_ticket"], "ticket-123")
 
@@ -548,7 +615,7 @@ class MediaProtocolTests(unittest.TestCase):
         getupload_call, cdn_call = mock_post.call_args_list
         self.assertEqual(getupload_call.args[0], f"{ilink.BASE_URL}/ilink/bot/getuploadurl")
         self.assertEqual(getupload_call.kwargs["json"]["media_type"], ilink.UPLOAD_MEDIA_TYPE_IMAGE)
-        self.assertEqual(getupload_call.kwargs["json"]["base_info"], {"channel_version": "2.1.7"})
+        self.assertEqual(getupload_call.kwargs["json"]["base_info"], ilink._base_info())
         self.assertEqual(getupload_call.kwargs["headers"]["Content-Type"], "application/json")
         self.assertEqual(cdn_call.args[0], "https://cdn.example.com/upload")
         self.assertEqual(cdn_call.kwargs["headers"]["Content-Type"], "application/octet-stream")
@@ -627,7 +694,7 @@ class MediaProtocolTests(unittest.TestCase):
         payload = mock_post.call_args.kwargs["json"]
         image_item = payload["msg"]["item_list"][0]
         self.assertEqual(image_item["type"], ilink.MESSAGE_ITEM_TYPE_IMAGE)
-        self.assertEqual(payload["base_info"], {"channel_version": "2.1.7"})
+        self.assertEqual(payload["base_info"], ilink._base_info())
 
     def test_send_video_uses_upload_video_type_and_message_video_item_type(self):
         client = ilink.ILinkClient()
@@ -659,7 +726,7 @@ class MediaProtocolTests(unittest.TestCase):
         self.assertEqual(video_item["video_item"]["media"]["encrypt_query_param"], "download-ref")
         self.assertEqual(video_item["video_item"]["video_size"], 456)
         self.assertEqual(video_item["video_item"]["play_length"], 15)
-        self.assertEqual(payload["base_info"], {"channel_version": "2.1.7"})
+        self.assertEqual(payload["base_info"], ilink._base_info())
 
     def test_send_video_path_uses_upload_video_type_and_message_video_item_type(self):
         client = ilink.ILinkClient()

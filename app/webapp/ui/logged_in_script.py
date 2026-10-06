@@ -490,12 +490,19 @@ UID: ${account.ilink_user_id || '—'}`;
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || '获取二维码失败');
         box.innerHTML = `<img src="data:image/png;base64,${data.qr_image_base64}" alt="QR Code" style="width:240px; height:240px;">`;
+        let verifyCode = '';
         accountQrTimer = setInterval(async () => {
           try {
-            const poll = await fetch('/api/accounts/qr_status?login_id=' + encodeURIComponent(data.login_id));
+            let pollUrl = '/api/accounts/qr_status?login_id=' + encodeURIComponent(data.login_id);
+            if (verifyCode) pollUrl += '&verify_code=' + encodeURIComponent(verifyCode);
+            const poll = await fetch(pollUrl);
             const status = await poll.json();
+            verifyCode = '';
             hint.textContent = status.message || '等待扫码';
-            if (status.status === 'confirmed') {
+            if (status.status === 'need_verifycode') {
+              const entered = window.prompt('请输入手机微信显示的配对码');
+              if (entered !== null) verifyCode = entered.trim();
+            } else if (status.status === 'confirmed' || status.already_connected) {
               clearInterval(accountQrTimer);
               accountQrTimer = null;
               closeAccountLogin();
@@ -507,11 +514,11 @@ UID: ${account.ilink_user_id || '—'}`;
               fetchServiceStatus();
               fetchContacts();
               fetchMsgs();
-              showToast('账号登录成功');
-            } else if (status.status === 'expired') {
+              showToast(status.already_connected ? '账号已连接，无需重复绑定' : '账号登录成功');
+            } else if (status.status === 'expired' || status.status === 'verify_code_blocked') {
               clearInterval(accountQrTimer);
               accountQrTimer = null;
-              hint.textContent = '二维码已过期，请刷新';
+              hint.textContent = status.message || '二维码已失效，请刷新';
             }
           } catch(e) {}
         }, 3000);

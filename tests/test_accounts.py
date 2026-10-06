@@ -94,10 +94,10 @@ class _FakeLoginClient:
         if self.token_file and os.path.exists(self.token_file):
             os.remove(self.token_file)
 
-    def get_qrcode(self):
+    def get_qrcode(self, local_token_list=None):
         return {"qrcode": "qr-new", "qrcode_img_content": "https://example.com/qr"}
 
-    def poll_qrcode_status(self, qrcode):
+    def poll_qrcode_status(self, qrcode, verify_code=""):
         self.bot_token = "new-token@im.bot:hash"
         self.bot_id = "bot-new"
         self.user_id = "user-new"

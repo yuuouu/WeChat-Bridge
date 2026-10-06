@@ -104,13 +104,21 @@ def render_qr_page(ctx: WebAppContext):
     # 自动轮询扫码状态
     auto_refresh = f"""
   let checking = false;
+  let verifyCode = '';
   setInterval(async () => {{
     if (checking) return;
     checking = true;
     try {{
-      const resp = await fetch('{status_url}');
+      let pollUrl = '{status_url}';
+      if (verifyCode) pollUrl += '&verify_code=' + encodeURIComponent(verifyCode);
+      const resp = await fetch(pollUrl);
       const data = await resp.json();
+      verifyCode = '';
       if (data.logged_in) location.reload();
+      else if (data.status === 'need_verifycode') {{
+        const entered = window.prompt('请输入手机微信显示的配对码');
+        if (entered !== null) verifyCode = entered.trim();
+      }}
       else if (data.status === 'expired') location.href='/?refresh_qr=' + Date.now();
     }} catch(e) {{}}
     checking = false;

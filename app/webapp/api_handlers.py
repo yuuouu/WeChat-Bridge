@@ -395,6 +395,9 @@ def _account_message(status: str) -> str:
         "wait": "等待扫码",
         "scaned": "已扫码，请在微信确认",
         "scaned_but_redirect": "正在重定向",
+        "need_verifycode": "请输入微信显示的配对码",
+        "verify_code_blocked": "配对码错误次数过多，请刷新二维码重试",
+        "binded_redirect": "该账号已经连接，无需重复绑定",
         "expired": "二维码已过期",
         "confirmed": "登录成功",
     }.get(status or "", "")
@@ -559,20 +562,22 @@ def handle_account_qr_status(handler, ctx, params):
         handler._json_response({"ok": False, "error": "当前运行模式不支持多账号扫码"}, 400)
         return
     login_id = params.get("login_id", [""])[0].strip()
+    verify_code = params.get("verify_code", [""])[0].strip()
     if not login_id:
         handler._json_response({"ok": False, "error": "缺少 login_id"}, 400)
         return
     try:
-        status_data = ctx.account_manager.poll_login_qr_status(login_id)
+        status_data = ctx.account_manager.poll_login_qr_status(login_id, verify_code=verify_code)
         status = status_data.get("status")
-        if status == "confirmed":
+        if status in ("confirmed", "binded_redirect"):
             ctx.qr_cache.data = None
             ctx.qr_cache.updated_at = 0.0
         handler._json_response(
             {
                 "ok": True,
                 "status": status,
-                "logged_in": status == "confirmed",
+                "logged_in": status == "confirmed" or bool(status_data.get("already_connected")),
+                "already_connected": bool(status_data.get("already_connected")),
                 "bot_id": status_data.get("bot_id", ""),
                 "message": _account_message(status),
             }
@@ -707,6 +712,7 @@ def handle_get_ai_config(handler, ctx, params):
 
 def handle_qr_status(handler, ctx, params):
     qrcode = params.get("qrcode", [""])[0]
+    verify_code = params.get("verify_code", [""])[0].strip()
     if not qrcode:
         handler._json_response({"error": "missing qrcode param"}, 400)
         return
@@ -715,7 +721,7 @@ def handle_qr_status(handler, ctx, params):
         if not ctx.client:
             handler._json_response({"error": "legacy qr endpoint unavailable"}, 400)
             return
-        status_data = ctx.client.poll_qrcode_status(qrcode)
+        status_data = ctx.client.poll_qrcode_status(qrcode, verify_code=verify_code)
         if status_data.get("status") == "expired":
             cached_qrcode = (ctx.qr_cache.data or {}).get("qrcode")
             if cached_qrcode == qrcode:

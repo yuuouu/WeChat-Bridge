@@ -46,6 +46,7 @@ class LoginSession:
     qrcode: str
     qrcode_data: dict
     created_at: float
+    verify_code: str = ""
 
 
 def _quote_ident(name: str) -> str:
@@ -543,7 +544,8 @@ class AccountManager:
             client = self.client_factory(token_file=None, load_token=False, save_on_login=False)
         except TypeError:
             client = self.client_factory()
-        data = client.get_qrcode()
+        # 新版接口要求 POST JSON。凭据默认不随二维码请求外发，因此列表保持为空。
+        data = client.get_qrcode(local_token_list=[])
         login_id = uuid.uuid4().hex
         qrcode = data.get("qrcode", "")
         self._login_sessions[login_id] = LoginSession(
@@ -562,16 +564,32 @@ class AccountManager:
             self._login_sessions.pop(login_id, None)
         return self.create_login_qr()
 
-    def poll_login_qr_status(self, login_id: str) -> dict:
+    def poll_login_qr_status(self, login_id: str, verify_code: str = "") -> dict:
         session = self._login_sessions.get(login_id)
         if not session:
             raise KeyError("login session not found")
 
-        status_data = session.client.poll_qrcode_status(session.qrcode)
+        if verify_code.strip():
+            session.verify_code = verify_code.strip()
+        status_data = session.client.poll_qrcode_status(session.qrcode, verify_code=session.verify_code)
         status = status_data.get("status")
+        if status == "scaned" and session.verify_code:
+            session.verify_code = ""
         if status == "expired":
             self._login_sessions.pop(login_id, None)
             return status_data
+
+        if status == "verify_code_blocked":
+            session.verify_code = ""
+            return status_data
+
+        if status == "binded_redirect":
+            self._login_sessions.pop(login_id, None)
+            return {
+                **status_data,
+                "already_connected": True,
+                "bot_id": db.get_default_bot_id() or "",
+            }
 
         if status == "confirmed":
             bot_id = session.client.get_bot_id()
