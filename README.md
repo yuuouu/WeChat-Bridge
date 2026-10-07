@@ -308,11 +308,13 @@ WeChat Bridge 基于腾讯 iLink Bot API，无法绕过官方接口限制：
 
 ## 隐私与数据收集
 
-- **默认统计**：安装脚本和版本检查通过 Cloudflare Worker 中转，只记录每日安装 / 启动次数的聚合计数
+- **默认统计**：安装脚本和版本检查通过 Cloudflare Worker 中转，记录每日请求次数；匿名遥测还会区分启动、首次观测、安装成功和升级事件
 - **可选遥测**：默认开启，可在 Web UI 的“匿名使用统计”中开启或关闭
-- **遥测字段**：`v` 版本、`os` 操作系统、`arch` CPU 架构、`py` Python 版本、`mode` 部署方式、`uptime_days` 运行天数、`accounts` 绑定账号数、`ai_provider` AI 提供商、`plugins_count` 插件数、`webhook_enabled` Webhook 状态、`features` 启用功能
+- **匿名去重**：原始随机安装 ID 只保存在本地；服务端仅接收按日、按周轮换的哈希标识，用于统计匿名 DAU / WAU，不能跨周期追踪实例
+- **遥测字段**：`v` 版本、`os` 操作系统、`arch` CPU 架构、`py` Python 版本、`mode` 部署方式、分桶后的运行天数 / 账号数 / 插件数、AI 提供商、Webhook 状态和启用功能
 - **不会收集**：微信消息内容、联系人、登录凭证、`API_TOKEN`、AI API Key
-- **保留周期**：数据 180 天后自动过期，Worker 源码见 [docs/assets/cf-worker-dl-proxy.js](docs/assets/cf-worker-dl-proxy.js)
+- **存储与保留**：匿名统计保存在 Cloudflare D1，180 天后由定时任务清理；KV 仅保留 GitHub 版本缓存
+- **部署说明**：Worker 源码见 [docs/assets/cf-worker-dl-proxy.js](docs/assets/cf-worker-dl-proxy.js)，D1 建表、绑定和验证步骤见 [Cloudflare D1 匿名统计部署](docs/cloudflare-d1-analytics.md)
 - **完全关闭版本检查**：部署时设置环境变量 `DISABLE_UPDATE_CHECK=1`，可连启动时版本检查一起禁用
 
 ---
