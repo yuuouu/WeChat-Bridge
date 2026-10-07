@@ -10,7 +10,6 @@ import logging
 import os
 import signal
 import sys
-import time
 
 # 配置日志
 log_format = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
@@ -45,6 +44,7 @@ import config as cfg
 import db
 import web
 from accounts import AccountManager
+from telemetry import TelemetryClient
 from version import __version__
 
 
@@ -52,8 +52,9 @@ def main():
     port = int(os.environ.get("PORT", "5200"))
     # Docker 容器内不应打开浏览器
     auto_open = os.environ.get("NO_BROWSER", "").lower() not in ("1", "true", "yes")
-    start_time = time.time()
     account_manager = None
+    telemetry_client = None
+    first_telemetry_report = True
 
     logger.info("=" * 50)
     logger.info("WeChat Bridge 启动中...")
@@ -78,6 +79,7 @@ def main():
 
     # ==== 检测更新 ====
     def check_for_updates():
+        nonlocal first_telemetry_report, telemetry_client
         import time as _time
 
         # 延迟 10 秒启动第一次检测，确保 main() 中 account_manager 等初始化完成
@@ -139,23 +141,10 @@ def main():
 
             if telemetry_on:
                 try:
-                    import json
-                    import platform
-                    import urllib.request
-
-                    # 计算运行天数
-                    uptime_days = int((_time.time() - start_time) / 86400)
-
-                    # 账号数量
                     try:
                         accounts_count = len(db.list_bot_accounts())
                     except Exception:
                         accounts_count = 0
-
-                    # AI 提供商
-                    ai_provider = current_cfg.get("provider") if current_cfg.get("enabled") else "none"
-
-                    # 插件数量
                     plugins_count = 0
                     try:
                         if account_manager is not None:
@@ -168,56 +157,25 @@ def main():
                                     plugins_count = len(first_runtime.bridge.plugin_registry.plugins)
                     except Exception:
                         pass
-
-                    # Webhook 状态
-                    webhook_enabled = (
-                        "true"
-                        if (bool(current_cfg.get("webhook_enabled")) and current_cfg.get("webhook_url"))
-                        else "false"
-                    )
-
-                    # 功能列表
-                    features = []
-                    if current_cfg.get("enabled"):
-                        features.append("ai")
-                    if bool(current_cfg.get("webhook_enabled")) and current_cfg.get("webhook_url"):
-                        features.append("webhook")
-                    if plugins_count > 0:
-                        features.append("plugins")
-                    if accounts_count > 1:
-                        features.append("multi_account")
-                    if os.path.exists("/.dockerenv"):
-                        features.append("docker")
-
-                    payload = json.dumps(
-                        {
-                            "v": __version__,
-                            "os": platform.system().lower(),
-                            "arch": platform.machine(),
-                            "py": f"{sys.version_info.major}.{sys.version_info.minor}",
-                            "mode": "docker" if os.path.exists("/.dockerenv") else "native",
-                            "uptime_days": str(uptime_days),
-                            "accounts": str(accounts_count),
-                            "ai_provider": str(ai_provider),
-                            "plugins_count": str(plugins_count),
-                            "webhook_enabled": webhook_enabled,
-                            "features": features,
-                        }
-                    ).encode()
-
-                    req = urllib.request.Request(
-                        f"{update_base_url}/telemetry",
-                        data=payload,
-                        headers={"Content-Type": "application/json", "User-Agent": "WeChat-Bridge-Updater"},
-                        method="POST",
-                    )
-                    urllib.request.urlopen(req, timeout=5)
-                    logger.debug("📊 匿名遥测已发送: %s", payload.decode())
+                    if telemetry_client is not None:
+                        report_ok = telemetry_client.report(
+                            current_cfg,
+                            accounts_count,
+                            plugins_count,
+                            process_start=first_telemetry_report,
+                        )
+                        first_telemetry_report = not report_ok
                 except Exception as e:
                     logger.debug("发送遥测失败: %s", e)
 
             # 每 24 小时检查一次
             _time.sleep(86400)
+
+    telemetry_client = TelemetryClient(
+        data_dir,
+        os.environ.get("UPDATE_CHECK_URL", "https://wb.yuuou.qzz.io"),
+        __version__,
+    )
 
     import threading
 

@@ -2,6 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 格式。
 
+## [Unreleased]
+
+### Added
+- 匿名心跳新增按日/按周轮换的去重标识，支持精确 DAU / WAU，并区分进程启动、首次观测、安装成功和升级事件
+- 新增 Cloudflare D1 建表迁移和部署文档
+
+### Changed
+- 匿名统计、DAU / WAU、事件和下载计数从 Workers KV 迁移到 D1；KV 仅保留 GitHub 版本响应缓存
+
+### Fixed
+- 存储写入失败时返回 `503`，避免客户端把未落库的安装或升级事件误标为已送达
+
 ## [1.4.0] - 2026-10-06
 
 ### Added

@@ -12,6 +12,7 @@ $CF_PROXY = "https://wb.yuuou.qzz.io"
 if ($env:WECHAT_BRIDGE_DIR) { $INSTALL_DIR = $env:WECHAT_BRIDGE_DIR } else { $INSTALL_DIR = Join-Path (Get-Location) "wechat-bridge" }
 if ($env:WECHAT_BRIDGE_PORT) { $PORT = $env:WECHAT_BRIDGE_PORT } else { $PORT = "5200" }
 if ($env:PIP_MIRROR) { $PIP_MIRROR = $env:PIP_MIRROR } else { $PIP_MIRROR = "" }
+$dataDirExisted = Test-Path (Join-Path $INSTALL_DIR "data")
 
 function Write-Info  { param($msg) Write-Host "  [OK] $msg" -ForegroundColor Green }
 function Write-Warn  { param($msg) Write-Host "  [!] $msg" -ForegroundColor Yellow }
@@ -146,6 +147,9 @@ Write-Info ("Install directory: " + $INSTALL_DIR)
 # ── 3. Install dependencies ──
 Push-Location $INSTALL_DIR
 New-Item -ItemType Directory -Force -Path "data" | Out-Null
+if (-not $dataDirExisted) {
+    Set-Content -Path (Join-Path "data" ".install_pending") -Value "windows" -Encoding ASCII
+}
 
 Write-Host "  [..] Installing Python dependencies..." -ForegroundColor DarkGray -NoNewline
 $pipArgs = @("-m", "pip", "install", "-q", "-r", "app/requirements.txt")

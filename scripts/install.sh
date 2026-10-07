@@ -12,6 +12,8 @@ REPO="yuuouu/WeChat-Bridge"
 CF_PROXY="https://wb.yuuou.qzz.io"
 INSTALL_DIR="${WECHAT_BRIDGE_DIR:-$(pwd)/wechat-bridge}"
 PORT="${WECHAT_BRIDGE_PORT:-5200}"
+DATA_DIR_EXISTED=false
+[ -d "${INSTALL_DIR}/data" ] && DATA_DIR_EXISTED=true
 
 # ── 参数解析（支持 curl ... | bash -s -- --mirror URL）──
 PIP_MIRROR="${PIP_MIRROR:-}"
@@ -107,6 +109,9 @@ fi
 
 cd "${INSTALL_DIR}"
 mkdir -p data
+if ! $DATA_DIR_EXISTED; then
+  printf '%s\n' "$MODE" > data/.install_pending
+fi
 info "安装目录: ${INSTALL_DIR}"
 
 if [[ "$MODE" == "docker" ]]; then
